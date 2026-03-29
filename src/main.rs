@@ -292,6 +292,44 @@ async fn handle_sse_event(state: &mut BotState, event: SseEvent) {
         }
     }
 
+    if event_type == "session.error" {
+        let error_msg = event
+            .data
+            .get("properties")
+            .and_then(|p| p.get("error"))
+            .and_then(|e| e.get("data"))
+            .and_then(|d| d.get("message"))
+            .and_then(|v| v.as_str())
+            .or_else(|| {
+                event.data.get("properties")
+                    .and_then(|p| p.get("error"))
+                    .and_then(|e| e.get("message"))
+                    .and_then(|v| v.as_str())
+            })
+            .unwrap_or("Unknown error")
+            .to_string();
+
+        // session.error may not include sessionID — try extracting it,
+        // otherwise apply to all active streams (typically just one).
+        let session_id = event
+            .data
+            .get("properties")
+            .and_then(|p| p.get("sessionID"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        if let Some(sid) = session_id {
+            if let Some(stream) = state.active_streams.get_mut(&sid) {
+                stream.error = Some(error_msg);
+            }
+        } else {
+            // Apply to all active streams
+            for stream in state.active_streams.values_mut() {
+                stream.error = Some(error_msg.clone());
+            }
+        }
+    }
+
     if event_type == "session.idle" {
         let session_id = event
             .data
@@ -336,9 +374,15 @@ async fn finalize_stream(state: &mut BotState, session_id: &str, stream: StreamS
         let re = regex::Regex::new(r"(?s)<channel\b[^>]*>.*?</channel>\n?").unwrap();
         re.replace_all(&stream.text, "").trim().to_string()
     };
-    if response_text.is_empty() {
-        return;
-    }
+    let response_text = if response_text.is_empty() {
+        if let Some(ref err) = stream.error {
+            format!("⚠️ {}", err)
+        } else {
+            "(no response)".to_string()
+        }
+    } else {
+        response_text
+    };
     final_text.push_str(&to_markdown_v2(&response_text));
 
     // Send final message
