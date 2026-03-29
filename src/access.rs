@@ -236,9 +236,7 @@ pub fn handle_pairing(access: &mut Access, sender_id: &str, chat_id: &str) -> St
 }
 
 fn generate_pairing_code() -> String {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    let bytes: [u8; 3] = rng.r#gen();
+    let bytes: [u8; 3] = rand::random();
     hex::encode(&bytes)
 }
 

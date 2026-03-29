@@ -31,24 +31,9 @@ impl Config {
 
         let access_file = state_dir.join("access.json");
         let approved_dir = state_dir.join("approved");
-        let env_file = state_dir.join(".env");
-
-        // Load .env
-        if let Ok(contents) = fs::read_to_string(&env_file) {
-            for line in contents.lines() {
-                if let Some((key, value)) = parse_env_line(line)
-                    && env::var(&key).is_err() {
-                        // SAFETY: called at startup before spawning threads
-                        unsafe { env::set_var(&key, &value); }
-                    }
-            }
-        }
 
         let bot_token = env::var("TELEGRAM_BOT_TOKEN").map_err(|_| {
-            format!(
-                "TELEGRAM_BOT_TOKEN required\n  set in {}\n  format: TELEGRAM_BOT_TOKEN=123456789:AAH...",
-                env_file.display()
-            )
+            "TELEGRAM_BOT_TOKEN required (set via environment or systemd EnvironmentFile)".to_string()
         })?;
 
         // Load opencode.json
@@ -67,15 +52,6 @@ impl Config {
             home_dir,
         })
     }
-}
-
-fn parse_env_line(line: &str) -> Option<(String, String)> {
-    let line = line.trim();
-    if line.is_empty() || line.starts_with('#') {
-        return None;
-    }
-    let (key, value) = line.split_once('=')?;
-    Some((key.to_string(), value.to_string()))
 }
 
 fn dirs_home() -> Option<String> {
