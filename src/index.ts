@@ -182,6 +182,10 @@ const msgSessions = new Map<string, string>() // `${chatId}:${botMsgId}` -> sess
 // Per-chat message queue to ensure sequential processing
 const chatQueues = new Map<string, Promise<void>>()
 
+// Per-chat model override for next new session
+// Model override: stored per bot message (for reply-to-confirm flow) and per chat (fallback)
+const msgModelOverride = new Map<string, string>() // `${chatId}:${botMsgId}` -> "providerID/modelID"
+
 function enqueue(chatId: string, fn: () => Promise<void>): void {
   const prev = chatQueues.get(chatId) ?? Promise.resolve()
   const next = prev.then(fn, fn) // run fn after previous completes (even if it failed)
@@ -198,8 +202,9 @@ console.log("Starting opencode server...")
 const opencodeConfig = JSON.parse(
   readFileSync(join(process.env.HOME ?? homedir(), "opencode.json"), "utf8")
 )
+const defaultModel: string = opencodeConfig.model ?? ""
 const opencode = await createOpencode({ port: 0, config: opencodeConfig })
-console.log("Opencode server ready")
+console.log("Opencode server ready, default model:", defaultModel)
 
 const bot = new Bot(TOKEN)
 let botUsername = ""
@@ -215,6 +220,12 @@ try {
 
 // Poll for approved pairings
 pollApproved(bot)
+
+// Register bot commands for autocomplete
+bot.api.setMyCommands([
+  { command: "models", description: "List available models" },
+  { command: "model", description: "Set model: /model provider/model" },
+]).catch((e) => console.error("Failed to set commands:", e))
 
 // ── Streaming state per session ──────────────────────────────────────────────
 
@@ -369,6 +380,78 @@ async function processMessage(ctx: Context, text: string, chatId: string, sender
   const replyToBot = replyTo?.from?.id === bot.botInfo?.id
   const msgId = ctx.message?.message_id
 
+  // Handle /models command — list available models
+  if (text.replace(/@\S+\s*/, "").trimStart().startsWith("/models")) {
+    const result = await opencode.client.provider.list()
+    if (result.error || !result.data) {
+      await ctx.reply("Failed to fetch model list.").catch(() => {})
+      return
+    }
+    const lines: string[] = ["Available models:\n"]
+    for (const provider of result.data.all) {
+      const modelEntries = Object.values(provider.models)
+      if (modelEntries.length === 0) continue
+      for (const model of modelEntries) {
+        const tags: string[] = []
+        if (model.attachment) tags.push("📎")
+        if (model.reasoning) tags.push("🧠")
+        const modalities = model.modalities?.input ?? []
+        if (modalities.includes("image")) tags.push("🖼")
+        lines.push(`  ${provider.id}/${model.id} ${tags.join("")}`)
+      }
+    }
+    await ctx.reply(lines.join("\n")).catch(() => {})
+    return
+  }
+
+  // Parse /model command: /model=xxx or /model xxx
+  // Strip @botname prefix first for group messages
+  let cleanText = text
+  const accessData = loadAccess()
+  const mentionPatterns = accessData.mentionPatterns ?? []
+  for (const p of mentionPatterns) {
+    if (cleanText.trimStart().startsWith(p)) {
+      cleanText = cleanText.trimStart().slice(p.length).trimStart()
+      break
+    }
+  }
+
+  let modelOverride: string | undefined
+  const modelMatch = cleanText.match(/^\/model[= ](\S+)\s*(.*)$/s)
+  if (modelMatch) {
+    modelOverride = modelMatch[1]!
+    cleanText = modelMatch[2]!.trim()
+
+    // Model-only message (no prompt): confirm and store on the confirmation message
+    if (!cleanText && files.length === 0) {
+      const sent = await ctx.reply(`Model set to ${modelOverride}. Reply to this message to start a new session.`).catch(() => undefined)
+      if (sent) {
+        msgModelOverride.set(`${chatId}:${sent.message_id}`, modelOverride)
+      }
+      return
+    }
+  }
+
+  // Check if replying to a model-set confirmation message
+  if (!modelOverride && replyToBot && replyTo) {
+    const replyKey = `${chatId}:${replyTo.message_id}`
+    if (msgModelOverride.has(replyKey)) {
+      modelOverride = msgModelOverride.get(replyKey)
+      msgModelOverride.delete(replyKey)
+    }
+  }
+
+  // Check if original text starts with @botname (before stripping)
+  const originalText = text
+  const isGroup = ctx.chat?.type === "group" || ctx.chat?.type === "supergroup"
+  const access = loadAccess()
+  const patterns = access.mentionPatterns ?? []
+  const startsWithMention = patterns.some((p) => originalText.trimStart().startsWith(p))
+  const forceNewSession = isGroup && startsWithMention
+
+  // Use cleanText (with @botname and /model stripped) for the prompt
+  text = cleanText || text
+
   // React immediately to acknowledge receipt
   if (msgId) {
     await bot.api.setMessageReaction(chatId, msgId, [{ type: "emoji", emoji: "👀" }]).catch(() => {})
@@ -380,11 +463,6 @@ async function processMessage(ctx: Context, text: string, chatId: string, sender
   // - Group: @botname at start of message → new session
   // - Group: reply to bot or mention elsewhere → continue latest session
   let sessionId: string | undefined
-  const isGroup = ctx.chat?.type === "group" || ctx.chat?.type === "supergroup"
-  const access = loadAccess()
-  const patterns = access.mentionPatterns ?? []
-  const startsWithMention = patterns.some((p) => text.trimStart().startsWith(p))
-  const forceNewSession = isGroup && startsWithMention
 
   if (!forceNewSession) {
     // Try to continue existing session
@@ -462,11 +540,17 @@ async function processMessage(ctx: Context, text: string, chatId: string, sender
     promptParts.push({ type: "file", mime: file.mime, url: file.dataUrl, filename: file.filename })
   }
 
+  // Parse model override into providerID/modelID
+  let promptOpts: any = { sessionID: sessionId!, parts: promptParts }
+  if (modelOverride) {
+    const slash = modelOverride.indexOf("/")
+    if (slash > 0) {
+      promptOpts.model = { providerID: modelOverride.slice(0, slash), modelID: modelOverride.slice(slash + 1) }
+    }
+  }
+
   // Fire prompt in background — SSE events drive streaming
-  opencode.client.session.prompt({
-    sessionID: sessionId!,
-    parts: promptParts,
-  }).then((result) => {
+  opencode.client.session.prompt(promptOpts).then((result) => {
     if (result.error) {
       console.error("Prompt error:", JSON.stringify(result.error))
       const s = activeStreams.get(sessionId!)
