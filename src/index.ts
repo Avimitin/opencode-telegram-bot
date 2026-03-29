@@ -220,17 +220,23 @@ pollApproved(bot)
 
 type StreamState = {
   chatId: string
+  threadId: number | undefined
+  isDM: boolean
   msgId: number | undefined
-  draftId: number
+  streamMsgId: number | undefined  // placeholder message we edit for streaming (groups)
+  draftId: number                  // draft ID for sendMessageDraft (DMs)
+  toolMsgId: number | undefined    // single message for all tool calls, edited to append
+  toolLines: string[]              // accumulated tool call lines
   reasoning: string
   text: string
   phase: "idle" | "reasoning" | "text" | "done"
-  lastDraftUpdate: number
+  lastStreamUpdate: number
   resolve: () => void
 }
 
 const activeStreams = new Map<string, StreamState>() // sessionId -> StreamState
-const DRAFT_THROTTLE_MS = 300 // min ms between draft updates
+const EDIT_THROTTLE_MS = 1500 // min ms between edits (Telegram rate limit ~20/min per chat)
+const DRAFT_THROTTLE_MS = 300  // min ms between draft updates (DMs, no rate limit)
 
 function findChatForSession(sessionId: string): string | undefined {
   for (const [key, sid] of msgSessions.entries()) {
@@ -258,22 +264,41 @@ function findChatForSession(sessionId: string): string | undefined {
           stream.phase = "text"
           stream.text = part.text
         } else if (part.type === "tool" && part.state.status === "completed") {
-          const toolMsg = `🔧 ${part.tool} — ${(part.state as any).title ?? "done"}`
-          await bot.api.sendMessage(Number(stream.chatId), toolMsg).catch(() => {})
+          stream.toolLines.push(`🔧 ${part.tool} — ${(part.state as any).title ?? "done"}`)
+          const toolText = stream.toolLines.join("\n")
+          if (stream.toolMsgId) {
+            await bot.api.editMessageText(
+              Number(stream.chatId), stream.toolMsgId, toolText
+            ).catch(() => {})
+          } else {
+            const opts: any = {}
+            if (stream.threadId) opts.message_thread_id = stream.threadId
+            const sent = await bot.api.sendMessage(Number(stream.chatId), toolText, opts).catch(() => undefined)
+            if (sent) stream.toolMsgId = sent.message_id
+          }
         }
 
-        // Throttled draft update for streaming display
+        // Throttled streaming display
         const now = Date.now()
-        if ((part.type === "reasoning" || part.type === "text") && now - stream.lastDraftUpdate >= DRAFT_THROTTLE_MS) {
-          stream.lastDraftUpdate = now
+        const throttle = stream.isDM ? DRAFT_THROTTLE_MS : EDIT_THROTTLE_MS
+        if ((part.type === "reasoning" || part.type === "text") && now - stream.lastStreamUpdate >= throttle) {
+          stream.lastStreamUpdate = now
           const display = stream.phase === "reasoning"
             ? `💭 ${stream.reasoning}`
             : stream.text
           if (display) {
             const truncated = display.length > 3900 ? "..." + display.slice(-3900) : display
-            await bot.api.sendMessageDraft(
-              Number(stream.chatId), stream.draftId, truncated
-            ).catch((e: any) => console.error("Draft error:", e?.message ?? e))
+            if (stream.isDM) {
+              // DM: use sendMessageDraft for native streaming look
+              await bot.api.sendMessageDraft(
+                Number(stream.chatId), stream.draftId, truncated
+              ).catch(() => {})
+            } else if (stream.streamMsgId) {
+              // Group: edit placeholder message
+              await bot.api.editMessageText(
+                Number(stream.chatId), stream.streamMsgId, truncated
+              ).catch(() => {})
+            }
           }
         }
       }
@@ -379,18 +404,34 @@ async function processMessage(ctx: Context, text: string, chatId: string, sender
   const ts = new Date().toISOString()
   const prompt = `<channel source="telegram" chat_id="${chatId}" message_id="${msgId}" user="${username}" user_id="${senderId}" ts="${ts}">\n${text}\n</channel>`
 
-  // Set up streaming state
+  // Set up streaming: DMs use sendMessageDraft, groups use editMessageText on placeholder
+  const threadId = ctx.message?.message_thread_id
+  const isDM = ctx.chat?.type === "private"
   const draftId = Math.floor(Math.random() * 2147483647) + 1
-  console.log("Registering stream for session:", sessionId, "chatId:", chatId, "draftId:", draftId)
+
+  let placeholderMsgId: number | undefined
+  if (!isDM) {
+    const opts: any = { reply_to_message_id: msgId }
+    if (threadId) opts.message_thread_id = threadId
+    const placeholder = await bot.api.sendMessage(chatId, "⏳", opts).catch(() => undefined)
+    placeholderMsgId = placeholder?.message_id
+  }
+
+  // Set up streaming state
   const streamDone = new Promise<void>((resolve) => {
     activeStreams.set(sessionId!, {
       chatId,
+      threadId,
+      isDM: !!isDM,
       msgId,
+      streamMsgId: placeholderMsgId,
       draftId,
+      toolMsgId: undefined,
+      toolLines: [],
       reasoning: "",
       text: "",
       phase: "idle",
-      lastDraftUpdate: 0,
+      lastStreamUpdate: 0,
       resolve,
     })
   })
@@ -426,6 +467,14 @@ async function processMessage(ctx: Context, text: string, chatId: string, sender
 
   if (!stream) return
 
+  // Delete the streaming placeholder and tool message
+  if (stream.streamMsgId) {
+    await bot.api.deleteMessage(chatId, stream.streamMsgId).catch(() => {})
+  }
+  if (stream.toolMsgId) {
+    await bot.api.deleteMessage(chatId, stream.toolMsgId).catch(() => {})
+  }
+
   // Build final message with expandable blockquote for thinking
   let finalText = ""
   if (stream.reasoning) {
@@ -433,13 +482,12 @@ async function processMessage(ctx: Context, text: string, chatId: string, sender
   }
   finalText += escapeHtml(stream.text || "(no response)")
 
-  // Clear draft and send final message
+  // Send final message
+  const sendOpts: any = { reply_to_message_id: msgId, parse_mode: "HTML" }
+  if (stream.threadId) sendOpts.message_thread_id = stream.threadId
   const chunks = splitMessage(finalText, 4096)
   for (const chunk of chunks) {
-    const sent = await bot.api.sendMessage(chatId, chunk, {
-      reply_to_message_id: msgId,
-      parse_mode: "HTML",
-    }).catch(() => undefined)
+    const sent = await bot.api.sendMessage(chatId, chunk, sendOpts).catch(() => undefined)
     if (sent) {
       msgSessions.set(`${chatId}:${sent.message_id}`, sessionId!)
     }
