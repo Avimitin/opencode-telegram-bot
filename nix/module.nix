@@ -3,8 +3,9 @@
 let
   cfg = config.services.opencode-telegram;
 
-  # Generate opencode.json from Nix attrs
+  # Generate config files from Nix attrs
   opencodeConfigFile = pkgs.writeText "opencode.json" (builtins.toJSON cfg.settings);
+  accessConfigFile = pkgs.writeText "access.json" (builtins.toJSON cfg.accessConfig);
 in
 {
   options.services.opencode-telegram = {
@@ -145,10 +146,7 @@ in
 
       preStart = ''
         cp ${opencodeConfigFile} ${cfg.stateDir}/opencode.json
-
-        cat > ${cfg.stateDir}/.opencode/channels/telegram/access.json <<'ACCESSEOF'
-        ${builtins.toJSON cfg.accessConfig}
-        ACCESSEOF
+        cp ${accessConfigFile} ${cfg.stateDir}/.opencode/channels/telegram/access.json
       '';
 
       environment = {
