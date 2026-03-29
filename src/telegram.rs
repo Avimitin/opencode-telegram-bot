@@ -198,6 +198,7 @@ impl TelegramClient {
         if let Some(ref markup) = opts.reply_markup {
             body["reply_markup"] = markup.clone();
         }
+        body["link_preview_options"] = json!({"is_disabled": true});
         self.call("sendMessage", body).await
     }
 
