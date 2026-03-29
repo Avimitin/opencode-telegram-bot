@@ -65,11 +65,10 @@ impl AccessCache {
     }
 
     pub fn load(&mut self) -> Access {
-        if let (Some(data), Some(loaded_at)) = (&self.data, &self.loaded_at) {
-            if loaded_at.elapsed().as_secs_f64() < CACHE_TTL_SECS {
+        if let (Some(data), Some(loaded_at)) = (&self.data, &self.loaded_at)
+            && loaded_at.elapsed().as_secs_f64() < CACHE_TTL_SECS {
                 return data.clone();
             }
-        }
         let access = match fs::read_to_string(&self.path) {
             Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
             Err(_) => Access::default(),
@@ -239,7 +238,7 @@ pub fn handle_pairing(access: &mut Access, sender_id: &str, chat_id: &str) -> St
 fn generate_pairing_code() -> String {
     use rand::Rng;
     let mut rng = rand::thread_rng();
-    let bytes: [u8; 3] = rng.gen();
+    let bytes: [u8; 3] = rng.r#gen();
     hex::encode(&bytes)
 }
 

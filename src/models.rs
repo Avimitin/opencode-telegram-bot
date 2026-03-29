@@ -24,11 +24,10 @@ impl ModelCache {
     }
 
     pub async fn get_models(&mut self, client: &OpencodeClient) -> Vec<ModelEntry> {
-        if let (Some(models), Some(loaded_at)) = (&self.models, &self.loaded_at) {
-            if loaded_at.elapsed().as_secs() < CACHE_TTL_SECS {
+        if let (Some(models), Some(loaded_at)) = (&self.models, &self.loaded_at)
+            && loaded_at.elapsed().as_secs() < CACHE_TTL_SECS {
                 return models.clone();
             }
-        }
 
         let models = match fetch_models(client).await {
             Ok(m) => m,
@@ -61,11 +60,10 @@ async fn fetch_models(client: &OpencodeClient) -> Result<Vec<ModelEntry>, String
             if model.reasoning {
                 tags.push("🧠");
             }
-            if let Some(ref modalities) = model.modalities {
-                if modalities.input.contains(&"image".to_string()) {
+            if let Some(ref modalities) = model.modalities
+                && modalities.input.contains(&"image".to_string()) {
                     tags.push("🖼");
                 }
-            }
             if model.attachment {
                 tags.push("📎");
             }

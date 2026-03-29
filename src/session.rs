@@ -17,11 +17,10 @@ impl<V> BoundedMap<V> {
     }
 
     pub fn insert(&mut self, key: String, value: V) {
-        if self.map.len() >= self.max_size && !self.map.contains_key(&key) {
-            if let Some(oldest) = self.order.pop_front() {
+        if self.map.len() >= self.max_size && !self.map.contains_key(&key)
+            && let Some(oldest) = self.order.pop_front() {
                 self.map.remove(&oldest);
             }
-        }
         if !self.map.contains_key(&key) {
             self.order.push_back(key.clone());
         }

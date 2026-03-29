@@ -32,12 +32,11 @@ impl OpencodeServer {
             while let Ok(Some(line)) = reader.next_line().await {
                 output.push_str(&line);
                 output.push('\n');
-                if line.contains("opencode server listening") {
-                    if let Some(start) = line.find("http") {
+                if line.contains("opencode server listening")
+                    && let Some(start) = line.find("http") {
                         let url = line[start..].trim().to_string();
                         return Ok(url);
                     }
-                }
             }
             Err(format!(
                 "opencode exited without printing listen URL. Output: {}",

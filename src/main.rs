@@ -190,7 +190,7 @@ async fn handle_sse_event(state: &mut BotState, event: SseEvent) {
         .data
         .get("type")
         .and_then(|v| v.as_str())
-        .or_else(|| {
+        .or({
             if !event.event_type.is_empty() {
                 Some(event.event_type.as_str())
             } else {
@@ -275,8 +275,8 @@ async fn handle_sse_event(state: &mut BotState, event: SseEvent) {
             // Throttled streaming display — update single message with all content
             let should_update = matches!(part_type, "reasoning" | "text" | "tool")
                 && stream.should_update();
-            if should_update {
-                if let Some(display) = stream.display_text() {
+            if should_update
+                && let Some(display) = stream.display_text() {
                     let chat_id = stream.chat_id.clone();
                     if let Some(stream_msg_id) = stream.stream_msg_id {
                         let markup = message::stop_button(&session_id);
@@ -287,7 +287,6 @@ async fn handle_sse_event(state: &mut BotState, event: SseEvent) {
                     }
                     stream.mark_updated();
                 }
-            }
         }
     }
 
@@ -440,8 +439,8 @@ async fn finalize_stream(state: &mut BotState, session_id: &str, stream: StreamS
     }
 
     // Drain pending queue: dispatch the next queued message for this session
-    if let Some(queue) = state.pending_queue.get_mut(session_id) {
-        if let Some(queued) = queue.pop_front() {
+    if let Some(queue) = state.pending_queue.get_mut(session_id)
+        && let Some(queued) = queue.pop_front() {
             if queue.is_empty() {
                 state.pending_queue.remove(session_id);
             }
@@ -458,7 +457,6 @@ async fn finalize_stream(state: &mut BotState, session_id: &str, stream: StreamS
             )
             .await;
         }
-    }
 }
 
 async fn poll_approved(tg: &TelegramClient, approved_dir: &std::path::Path) {

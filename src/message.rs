@@ -39,8 +39,8 @@ pub async fn handle_update(state: &mut BotState, update: &Update) {
 
         if let Some(ref photos) = msg.photo {
             // Get largest photo
-            if let Some(largest) = photos.last() {
-                if let Some(file) = download_telegram_file(
+            if let Some(largest) = photos.last()
+                && let Some(file) = download_telegram_file(
                     &state.tg,
                     &largest.file_id,
                     "image/jpeg",
@@ -50,7 +50,6 @@ pub async fn handle_update(state: &mut BotState, update: &Update) {
                 {
                     files.push(file);
                 }
-            }
             text = msg.caption.clone().unwrap_or_else(|| "(photo)".to_string());
         } else if let Some(ref doc) = msg.document {
             let mime = doc
@@ -61,13 +60,12 @@ pub async fn handle_update(state: &mut BotState, update: &Update) {
                 .file_name
                 .clone()
                 .unwrap_or_else(|| "file".to_string());
-            if mime.starts_with("image/") {
-                if let Some(file) =
+            if mime.starts_with("image/")
+                && let Some(file) =
                     download_telegram_file(&state.tg, &doc.file_id, &mime, &filename).await
                 {
                     files.push(file);
                 }
-            }
             text = msg
                 .caption
                 .clone()
@@ -334,12 +332,11 @@ async fn process_message(
         .map(|u| u.id == state.bot_id)
         .unwrap_or(false);
 
-    if model_override.is_none() && reply_to_bot {
-        if let Some(reply_msg) = &msg.reply_to_message {
+    if model_override.is_none() && reply_to_bot
+        && let Some(reply_msg) = &msg.reply_to_message {
             let key = format!("{}:{}", chat_id, reply_msg.message_id);
             model_override = state.msg_model_override.remove(&key);
         }
-    }
 
     // Detect @mention → force new session in groups
     let is_group = msg.chat.chat_type == "group" || msg.chat.chat_type == "supergroup";
@@ -357,12 +354,11 @@ async fn process_message(
     let mut session_id: Option<String> = None;
 
     if !force_new_session {
-        if reply_to_bot {
-            if let Some(reply_msg) = &msg.reply_to_message {
+        if reply_to_bot
+            && let Some(reply_msg) = &msg.reply_to_message {
                 let key = format!("{}:{}", chat_id, reply_msg.message_id);
                 session_id = state.msg_sessions.get(&key).cloned();
             }
-        }
         if session_id.is_none() {
             session_id = state
                 .msg_sessions
@@ -421,8 +417,8 @@ async fn process_message(
 
     // When replying to another user's message (not the bot), include quoted context
     let mut quoted_context = String::new();
-    if !reply_to_bot {
-        if let Some(reply_msg) = &msg.reply_to_message {
+    if !reply_to_bot
+        && let Some(reply_msg) = &msg.reply_to_message {
             let reply_text = reply_msg
                 .text
                 .as_deref()
@@ -448,7 +444,6 @@ async fn process_message(
                 );
             }
         }
-    }
 
     let prompt = format!(
         "<channel source=\"telegram\" chat_id=\"{}\" message_id=\"{}\" user=\"{}\" user_id=\"{}\" ts=\"{}\">\n{}{}\n</channel>",
@@ -587,12 +582,11 @@ async fn handle_stat(state: &mut BotState, chat_id: &str, session_id: &str, opts
         };
         let role = info.get("role").and_then(|v| v.as_str()).unwrap_or("");
 
-        if role == "user" && model_id.is_empty() {
-            if let Some(model) = info.get("model") {
+        if role == "user" && model_id.is_empty()
+            && let Some(model) = info.get("model") {
                 provider_id = model.get("providerID").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 model_id = model.get("modelID").and_then(|v| v.as_str()).unwrap_or("").to_string();
             }
-        }
 
         if role == "assistant" {
             if let Some(tokens) = info.get("tokens") {

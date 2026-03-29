@@ -36,11 +36,11 @@ impl Config {
         // Load .env
         if let Ok(contents) = fs::read_to_string(&env_file) {
             for line in contents.lines() {
-                if let Some((key, value)) = parse_env_line(line) {
-                    if env::var(&key).is_err() {
-                        env::set_var(&key, &value);
+                if let Some((key, value)) = parse_env_line(line)
+                    && env::var(&key).is_err() {
+                        // SAFETY: called at startup before spawning threads
+                        unsafe { env::set_var(&key, &value); }
                     }
-                }
             }
         }
 
