@@ -26,11 +26,13 @@
         let pkgs = nixpkgs.legacyPackages.${system};
         in {
           default = pkgs.mkShell {
-            packages = with pkgs; [ bun opencode ];
+            nativeBuildInputs = with pkgs; [ cargo rustc pkg-config clippy rustfmt ];
+            buildInputs = with pkgs; [ openssl opencode ];
             shellHook = ''
               echo "opencode-telegram-bot dev shell"
-              echo "  bun install   — install deps"
-              echo "  bun run dev   — start bot"
+              echo "  cargo build   — build"
+              echo "  cargo clippy  — lint"
+              echo "  cargo run     — start bot"
             '';
           };
         }

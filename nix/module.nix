@@ -150,11 +150,8 @@ in
             "AF_INET6"
             "AF_UNIX"
           ];
-          SystemCallFilter = lib.mkDefault [
-            "@system-service"
-            "~@privileged"
-            "~@resources"
-          ];
+          # Note: no SystemCallFilter — opencode is a Go binary that needs
+          # sched_setscheduler (@privileged) and other syscalls from its runtime.
           ReadWritePaths = [ cfg.stateDir ];
         })
       ];

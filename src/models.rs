@@ -1,0 +1,127 @@
+use crate::opencode::OpencodeClient;
+use serde_json::{json, Value};
+use std::time::Instant;
+
+pub struct ModelEntry {
+    pub full_id: String,
+    pub label: String,
+}
+
+pub struct ModelCache {
+    models: Option<Vec<ModelEntry>>,
+    loaded_at: Option<Instant>,
+}
+
+const CACHE_TTL_SECS: u64 = 300; // 5 minutes
+const MODELS_PER_PAGE: usize = 6;
+
+impl ModelCache {
+    pub fn new() -> Self {
+        ModelCache {
+            models: None,
+            loaded_at: None,
+        }
+    }
+
+    pub async fn get_models(&mut self, client: &OpencodeClient) -> Vec<ModelEntry> {
+        if let (Some(models), Some(loaded_at)) = (&self.models, &self.loaded_at) {
+            if loaded_at.elapsed().as_secs() < CACHE_TTL_SECS {
+                return models.clone();
+            }
+        }
+
+        let models = match fetch_models(client).await {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("Failed to fetch models: {}", e);
+                return Vec::new();
+            }
+        };
+
+        self.models = Some(models.clone());
+        self.loaded_at = Some(Instant::now());
+        models
+    }
+}
+
+async fn fetch_models(client: &OpencodeClient) -> Result<Vec<ModelEntry>, String> {
+    let result = client.provider_list().await?;
+    let mut models = Vec::new();
+
+    for provider in &result.all {
+        let env_configured =
+            provider.env.is_empty() || provider.env.iter().any(|e| std::env::var(e).is_ok());
+        if !env_configured {
+            continue;
+        }
+
+        for model in provider.models.values() {
+            let full_id = format!("{}/{}", provider.id, model.id);
+            let mut tags = Vec::new();
+            if model.reasoning {
+                tags.push("🧠");
+            }
+            if let Some(ref modalities) = model.modalities {
+                if modalities.input.contains(&"image".to_string()) {
+                    tags.push("🖼");
+                }
+            }
+            if model.attachment {
+                tags.push("📎");
+            }
+            let tag_str = if tags.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", tags.join(""))
+            };
+            models.push(ModelEntry {
+                full_id: full_id.clone(),
+                label: format!("{}{}", full_id, tag_str),
+            });
+        }
+    }
+    Ok(models)
+}
+
+impl Clone for ModelEntry {
+    fn clone(&self) -> Self {
+        ModelEntry {
+            full_id: self.full_id.clone(),
+            label: self.label.clone(),
+        }
+    }
+}
+
+pub fn build_model_keyboard(models: &[ModelEntry], page: usize) -> Value {
+    let total_pages = models.len().div_ceil(MODELS_PER_PAGE);
+    let start = page * MODELS_PER_PAGE;
+    let page_models = &models[start..models.len().min(start + MODELS_PER_PAGE)];
+
+    let mut rows: Vec<Value> = Vec::new();
+
+    // Top nav
+    if total_pages > 1 && page > 0 {
+        rows.push(json!([{
+            "text": format!("⬅️ Page {}", page),
+            "callback_data": format!("modelpage:{}", page - 1)
+        }]));
+    }
+
+    // Model buttons
+    for m in page_models {
+        rows.push(json!([{
+            "text": &m.label,
+            "callback_data": format!("model:{}", m.full_id)
+        }]));
+    }
+
+    // Bottom nav
+    if total_pages > 1 && page < total_pages - 1 {
+        rows.push(json!([{
+            "text": format!("Page {} ➡️", page + 2),
+            "callback_data": format!("modelpage:{}", page + 1)
+        }]));
+    }
+
+    json!({ "inline_keyboard": rows })
+}
