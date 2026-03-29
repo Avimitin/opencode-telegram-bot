@@ -51,7 +51,7 @@ impl OpencodeServer {
         })?;
 
         // Poll health endpoint until server is ready
-        let client = Client::new();
+        let client = Client::builder().no_proxy().build().unwrap();
         let health_url = format!("{}/global/health", url);
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
@@ -153,8 +153,12 @@ pub struct ProviderListResponse {
 
 impl OpencodeClient {
     pub fn new(base_url: &str) -> Self {
+        let client = Client::builder()
+            .no_proxy()
+            .build()
+            .expect("failed to build reqwest client");
         OpencodeClient {
-            client: Client::new(),
+            client,
             base_url: base_url.to_string(),
         }
     }
