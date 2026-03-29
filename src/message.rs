@@ -338,9 +338,41 @@ async fn process_message(
     let ts = chrono_now_iso();
     let safe_text = sanitize_for_xml(&prompt_text);
     let safe_username = sanitize_for_xml(&username);
+
+    // When replying to another user's message (not the bot), include quoted context
+    let mut quoted_context = String::new();
+    if !reply_to_bot {
+        if let Some(reply_msg) = &msg.reply_to_message {
+            let reply_text = reply_msg
+                .text
+                .as_deref()
+                .or(reply_msg.caption.as_deref())
+                .unwrap_or("");
+            if !reply_text.is_empty() {
+                let reply_user = reply_msg
+                    .from
+                    .as_ref()
+                    .and_then(|u| u.username.clone().or(Some(u.first_name.clone())))
+                    .unwrap_or_else(|| "unknown".to_string());
+                let reply_uid = reply_msg
+                    .from
+                    .as_ref()
+                    .map(|u| u.id.to_string())
+                    .unwrap_or_default();
+                quoted_context = format!(
+                    "<quoted-message user=\"{}\" user_id=\"{}\" message_id=\"{}\">\n{}\n</quoted-message>\n",
+                    sanitize_for_xml(&reply_user),
+                    reply_uid,
+                    reply_msg.message_id,
+                    sanitize_for_xml(reply_text)
+                );
+            }
+        }
+    }
+
     let prompt = format!(
-        "<channel source=\"telegram\" chat_id=\"{}\" message_id=\"{}\" user=\"{}\" user_id=\"{}\" ts=\"{}\">\n{}\n</channel>",
-        chat_id, msg_id, safe_username, sender_id, ts, safe_text
+        "<channel source=\"telegram\" chat_id=\"{}\" message_id=\"{}\" user=\"{}\" user_id=\"{}\" ts=\"{}\">\n{}{}\n</channel>",
+        chat_id, msg_id, safe_username, sender_id, ts, quoted_context, safe_text
     );
 
     // Set up streaming
