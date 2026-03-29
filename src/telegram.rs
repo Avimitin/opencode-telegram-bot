@@ -215,6 +215,7 @@ impl TelegramClient {
                     "chat_id": chat_id,
                     "message_id": message_id,
                     "text": text,
+                    "link_preview_options": {"is_disabled": true},
                 }),
             )
             .await?;
@@ -236,6 +237,7 @@ impl TelegramClient {
                     "message_id": message_id,
                     "text": text,
                     "reply_markup": reply_markup,
+                    "link_preview_options": {"is_disabled": true},
                 }),
             )
             .await?;
