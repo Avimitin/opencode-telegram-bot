@@ -196,6 +196,14 @@ async fn handle_sse_event(state: &mut BotState, event: SseEvent) {
         })
         .unwrap_or("");
 
+    // Log non-heartbeat SSE events for diagnostics
+    if event_type != "server.heartbeat" && event_type != "server.connected" {
+        let data_str = event.data.to_string();
+        let limit = if event_type == "session.error" { 500 } else { 200 };
+        eprintln!("SSE event: type={} data={}", event_type,
+            &data_str[..data_str.len().min(limit)]);
+    }
+
     if event_type == "message.part.updated" {
         let props = &event.data;
         let session_id = props
@@ -348,6 +356,16 @@ async fn handle_sse_event(state: &mut BotState, event: SseEvent) {
 /// Send the final response message and clean up after a stream completes.
 async fn finalize_stream(state: &mut BotState, session_id: &str, stream: StreamState) {
     let chat_id = &stream.chat_id;
+
+    eprintln!(
+        "finalize_stream: session={} text_len={} reasoning_len={} tools={} phase={:?} error={:?}",
+        &session_id[..session_id.len().min(12)],
+        stream.text.len(),
+        stream.reasoning.len(),
+        stream.tool_lines.len(),
+        stream.phase,
+        stream.error.as_deref().unwrap_or("none"),
+    );
 
     // Delete streaming placeholder and tool message
     if let Some(mid) = stream.stream_msg_id {
