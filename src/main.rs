@@ -279,9 +279,10 @@ async fn handle_sse_event(state: &mut BotState, event: SseEvent) {
                 if let Some(display) = stream.display_text() {
                     let chat_id = stream.chat_id.clone();
                     if let Some(stream_msg_id) = stream.stream_msg_id {
+                        let markup = message::stop_button(&session_id);
                         let _ = state
                             .tg
-                            .edit_message_text(&chat_id, stream_msg_id, &display)
+                            .edit_message_text_markup(&chat_id, stream_msg_id, &display, &markup)
                             .await;
                     }
                     stream.mark_updated();

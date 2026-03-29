@@ -207,6 +207,19 @@ impl OpencodeClient {
             .map_err(|e| format!("provider.list parse: {}", e))
     }
 
+    pub async fn session_abort(&self, session_id: &str) -> Result<(), String> {
+        let resp = self
+            .client
+            .post(format!("{}/session/{}/abort", self.base_url, session_id))
+            .send()
+            .await
+            .map_err(|e| format!("session.abort: {}", e))?;
+        if !resp.status().is_success() {
+            return Err(format!("session.abort: HTTP {}", resp.status()));
+        }
+        Ok(())
+    }
+
     /// Subscribe to SSE events. Returns the raw response for streaming.
     pub async fn event_subscribe(&self) -> Result<reqwest::Response, String> {
         self.client

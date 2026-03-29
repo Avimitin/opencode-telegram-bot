@@ -221,6 +221,27 @@ impl TelegramClient {
         Ok(())
     }
 
+    pub async fn edit_message_text_markup(
+        &self,
+        chat_id: &str,
+        message_id: i64,
+        text: &str,
+        reply_markup: &Value,
+    ) -> Result<(), String> {
+        let _: Value = self
+            .call(
+                "editMessageText",
+                json!({
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "text": text,
+                    "reply_markup": reply_markup,
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
     pub async fn edit_message_reply_markup(
         &self,
         chat_id: &str,

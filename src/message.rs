@@ -454,6 +454,7 @@ pub async fn dispatch_prompt(
     if !is_dm {
         let mut opts = SendOpts {
             reply_to_message_id: Some(msg_id),
+            reply_markup: Some(stop_button(session_id)),
             ..Default::default()
         };
         if let Some(tid) = thread_id {
@@ -533,9 +534,27 @@ async fn handle_callback(state: &mut BotState, cb: &CallbackQuery) {
                 .await;
             let _ = state.tg.answer_callback_query(&cb.id, None).await;
         }
+    } else if let Some(session_id) = data.strip_prefix("stop:") {
+        // Abort the opencode session and finalize with current content
+        let _ = state.oc.session_abort(session_id).await;
+        // The SSE handler will receive session.idle and finalize the stream.
+        // Answer the callback immediately.
+        let _ = state
+            .tg
+            .answer_callback_query(&cb.id, Some("Stopping..."))
+            .await;
     } else if data == "noop" {
         let _ = state.tg.answer_callback_query(&cb.id, None).await;
     }
+}
+
+pub fn stop_button(session_id: &str) -> serde_json::Value {
+    json!({
+        "inline_keyboard": [[{
+            "text": "⏹ Stop",
+            "callback_data": format!("stop:{}", session_id)
+        }]]
+    })
 }
 
 fn chrono_now_iso() -> String {
