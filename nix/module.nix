@@ -1,0 +1,148 @@
+{ config, lib, pkgs, ... }:
+
+let
+  cfg = config.services.opencode-telegram;
+
+  # Generate opencode.json from Nix attrs
+  opencodeConfigFile = pkgs.writeText "opencode.json" (builtins.toJSON cfg.settings);
+in
+{
+  options.services.opencode-telegram = {
+    enable = lib.mkEnableOption "OpenCode Telegram bot";
+
+    opencodePackage = lib.mkOption {
+      type = lib.types.package;
+      default = pkgs.opencode;
+      description = "The opencode package providing the `opencode` binary.";
+    };
+
+    botPackage = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      description = ''
+        Path to the opencode-telegram-bot source directory.
+        If null, uses the source from this flake.
+      '';
+    };
+
+    user = lib.mkOption {
+      type = lib.types.str;
+      default = "opencode-telegram";
+      description = "User to run the service as.";
+    };
+
+    group = lib.mkOption {
+      type = lib.types.str;
+      default = "opencode-telegram";
+      description = "Group to run the service as.";
+    };
+
+    stateDir = lib.mkOption {
+      type = lib.types.path;
+      default = "/var/lib/opencode-telegram";
+      description = "State directory for opencode and Telegram channel data.";
+    };
+
+    botTokenFile = lib.mkOption {
+      type = lib.types.path;
+      description = "Path to a file containing the Telegram bot token.";
+    };
+
+    settings = lib.mkOption {
+      type = lib.types.attrs;
+      default = {};
+      description = ''
+        OpenCode configuration as Nix attrs, serialized to opencode.json.
+        See https://opencode.ai/docs/configuration for all options.
+      '';
+    };
+
+    accessConfig = lib.mkOption {
+      type = lib.types.attrs;
+      default = {
+        dmPolicy = "pairing";
+        allowFrom = [];
+        groups = {};
+        pending = {};
+        mentionPatterns = [];
+      };
+      description = "Telegram channel access.json configuration.";
+    };
+
+    environmentFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      description = "Path to environment file for API keys (systemd EnvironmentFile=).";
+    };
+
+    extraEnvironment = lib.mkOption {
+      type = lib.types.attrsOf lib.types.str;
+      default = {};
+      description = "Extra environment variables for the service.";
+    };
+  };
+
+  config = lib.mkIf cfg.enable {
+    users.users.${cfg.user} = {
+      isSystemUser = true;
+      home = cfg.stateDir;
+      createHome = true;
+      group = cfg.group;
+    };
+    users.groups.${cfg.group} = {};
+
+    systemd.tmpfiles.rules = [
+      "d ${cfg.stateDir} 0700 ${cfg.user} ${cfg.group} -"
+      "d ${cfg.stateDir}/.opencode 0700 ${cfg.user} ${cfg.group} -"
+      "d ${cfg.stateDir}/.opencode/channels 0700 ${cfg.user} ${cfg.group} -"
+      "d ${cfg.stateDir}/.opencode/channels/telegram 0700 ${cfg.user} ${cfg.group} -"
+      "d ${cfg.stateDir}/.opencode/channels/telegram/approved 0700 ${cfg.user} ${cfg.group} -"
+    ];
+
+    systemd.services.opencode-telegram = {
+      description = "OpenCode Telegram Bot";
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
+      wantedBy = [ "multi-user.target" ];
+
+      path = [ cfg.opencodePackage pkgs.bun ];
+
+      serviceConfig = {
+        Type = "simple";
+        User = cfg.user;
+        Group = cfg.group;
+        WorkingDirectory = cfg.stateDir;
+        Restart = "on-failure";
+        RestartSec = 10;
+
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = "yes";
+        PrivateTmp = true;
+        ReadWritePaths = [ cfg.stateDir ];
+      } // lib.optionalAttrs (cfg.environmentFile != null) {
+        EnvironmentFile = cfg.environmentFile;
+      };
+
+      preStart = ''
+        cp ${opencodeConfigFile} ${cfg.stateDir}/opencode.json
+
+        cat > ${cfg.stateDir}/.opencode/channels/telegram/access.json <<'ACCESSEOF'
+        ${builtins.toJSON cfg.accessConfig}
+        ACCESSEOF
+
+        echo "TELEGRAM_BOT_TOKEN=$(cat ${cfg.botTokenFile})" > ${cfg.stateDir}/.opencode/channels/telegram/.env
+        chmod 600 ${cfg.stateDir}/.opencode/channels/telegram/.env
+      '';
+
+      environment = {
+        HOME = cfg.stateDir;
+        TELEGRAM_STATE_DIR = "${cfg.stateDir}/.opencode/channels/telegram";
+      } // cfg.extraEnvironment;
+
+      script = ''
+        exec bun run ${cfg.botPackage or ./.}/src/index.ts
+      '';
+    };
+  };
+}
