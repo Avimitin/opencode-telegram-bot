@@ -61,9 +61,8 @@ in
     };
 
     environmentFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
-      default = null;
-      description = "Path to environment file for API keys (systemd EnvironmentFile=).";
+      type = lib.types.path;
+      description = "Path to environment file containing API keys (e.g. ZHIPU_API_KEY). Loaded via systemd EnvironmentFile=.";
     };
 
     sandbox = lib.mkOption {
@@ -112,11 +111,8 @@ in
           ExecStart = "${cfg.package}/bin/opencode-telegram-bot";
           Restart = "on-failure";
           RestartSec = 10;
-        }
-
-        (lib.mkIf (cfg.environmentFile != null) {
           EnvironmentFile = cfg.environmentFile;
-        })
+        }
 
         # Sandboxing and hardening
         (lib.mkIf cfg.sandbox {
