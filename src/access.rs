@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::time::Instant;
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -49,32 +49,38 @@ impl Default for Access {
 
 pub struct AccessCache {
     data: Option<Access>,
-    loaded_at: Option<Instant>,
+    last_mtime: Option<std::time::SystemTime>,
     path: std::path::PathBuf,
 }
-
-const CACHE_TTL_SECS: f64 = 2.0;
 
 impl AccessCache {
     pub fn new(path: std::path::PathBuf) -> Self {
         AccessCache {
             data: None,
-            loaded_at: None,
+            last_mtime: None,
             path,
         }
     }
 
     pub fn load(&mut self) -> Access {
-        if let (Some(data), Some(loaded_at)) = (&self.data, &self.loaded_at)
-            && loaded_at.elapsed().as_secs_f64() < CACHE_TTL_SECS {
-                return data.clone();
-            }
+        let current_mtime = fs::metadata(&self.path)
+            .and_then(|m| m.modified())
+            .ok();
+
+        // Return cached data if file hasn't been modified
+        if let Some(ref data) = self.data
+            && self.last_mtime == current_mtime
+            && current_mtime.is_some()
+        {
+            return data.clone();
+        }
+
         let access = match fs::read_to_string(&self.path) {
             Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
             Err(_) => Access::default(),
         };
         self.data = Some(access.clone());
-        self.loaded_at = Some(Instant::now());
+        self.last_mtime = current_mtime;
         access
     }
 
@@ -86,7 +92,10 @@ impl AccessCache {
             let _ = fs::write(&self.path, json);
         }
         self.data = Some(access.clone());
-        self.loaded_at = Some(Instant::now());
+        // Update cached mtime after writing
+        self.last_mtime = fs::metadata(&self.path)
+            .and_then(|m| m.modified())
+            .ok();
     }
 }
 
