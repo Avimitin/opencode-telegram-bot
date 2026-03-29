@@ -329,8 +329,13 @@ async fn finalize_stream(state: &mut BotState, session_id: &str, stream: StreamS
     let response_text = if stream.text.is_empty() {
         "(no response)".to_string()
     } else {
-        stream.text.clone()
+        // Strip <channel>...</channel> tags the LLM may echo back
+        let re = regex::Regex::new(r"(?s)<channel\b[^>]*>.*?</channel>\n?").unwrap();
+        re.replace_all(&stream.text, "").trim().to_string()
     };
+    if response_text.is_empty() {
+        return;
+    }
     final_text.push_str(&to_markdown_v2(&response_text));
 
     // Send final message
