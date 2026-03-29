@@ -180,7 +180,21 @@ async fn reconnect_sse(oc: &OpencodeClient) -> SseStream {
 }
 
 async fn handle_sse_event(state: &mut BotState, event: SseEvent) {
-    if event.event_type == "message.part.updated" {
+    // opencode puts the event type in data.type, not in the SSE event: header
+    let event_type = event
+        .data
+        .get("type")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            if !event.event_type.is_empty() {
+                Some(event.event_type.as_str())
+            } else {
+                None
+            }
+        })
+        .unwrap_or("");
+
+    if event_type == "message.part.updated" {
         let props = &event.data;
         let session_id = props
             .get("properties")
@@ -274,7 +288,7 @@ async fn handle_sse_event(state: &mut BotState, event: SseEvent) {
         }
     }
 
-    if event.event_type == "session.idle" {
+    if event_type == "session.idle" {
         let session_id = event
             .data
             .get("properties")
