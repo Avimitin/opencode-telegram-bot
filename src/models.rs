@@ -1,6 +1,5 @@
 use crate::opencode::OpencodeClient;
 use serde_json::{json, Value};
-use std::time::Instant;
 
 pub struct ModelEntry {
     pub full_id: String,
@@ -9,25 +8,21 @@ pub struct ModelEntry {
 
 pub struct ModelCache {
     models: Option<Vec<ModelEntry>>,
-    loaded_at: Option<Instant>,
 }
 
-const CACHE_TTL_SECS: u64 = 300; // 5 minutes
 const MODELS_PER_PAGE: usize = 6;
 
 impl ModelCache {
     pub fn new() -> Self {
-        ModelCache {
-            models: None,
-            loaded_at: None,
-        }
+        ModelCache { models: None }
     }
 
+    /// Returns the cached model list, fetching once on first call.
+    /// The list is static for the lifetime of the opencode server.
     pub async fn get_models(&mut self, client: &OpencodeClient) -> Vec<ModelEntry> {
-        if let (Some(models), Some(loaded_at)) = (&self.models, &self.loaded_at)
-            && loaded_at.elapsed().as_secs() < CACHE_TTL_SECS {
-                return models.clone();
-            }
+        if let Some(ref models) = self.models {
+            return models.clone();
+        }
 
         let models = match fetch_models(client).await {
             Ok(m) => m,
@@ -38,7 +33,6 @@ impl ModelCache {
         };
 
         self.models = Some(models.clone());
-        self.loaded_at = Some(Instant::now());
         models
     }
 }
