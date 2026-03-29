@@ -111,6 +111,13 @@ async fn handle_message(
 ) {
     let chat_id = msg.chat.id.to_string();
     let sender_id = msg.from.as_ref().map(|u| u.id.to_string()).unwrap_or_default();
+    let msg_id = msg.message_id;
+    let thread_id = msg.message_thread_id;
+    let reply_opts = SendOpts {
+        reply_to_message_id: Some(msg_id),
+        message_thread_id: thread_id,
+        ..Default::default()
+    };
     let access = state.access_cache.load();
 
     // Strip mention and parse commands
@@ -141,11 +148,7 @@ async fn handle_message(
                 .send_message(
                     &chat_id,
                     "Reply to a bot message with /stat to see session stats.",
-                    &SendOpts {
-                        reply_to_message_id: Some(msg.message_id),
-                        message_thread_id: msg.message_thread_id,
-                        ..Default::default()
-                    },
+                    &reply_opts,
                 )
                 .await;
             return;
@@ -167,17 +170,17 @@ async fn handle_message(
             });
 
         if let Some(sid) = session_id {
-            handle_stat(state, &chat_id, &sid).await;
+            handle_stat(state, &chat_id, &sid, &reply_opts).await;
         } else {
             // No cached session — try fetching the latest from opencode
             match state.oc.session_list().await {
                 Ok(sessions) => {
                     if let Some(s) = sessions.first() {
-                        handle_stat(state, &chat_id, &s.id).await;
+                        handle_stat(state, &chat_id, &s.id, &reply_opts).await;
                     } else {
                         let _ = state
                             .tg
-                            .send_message(&chat_id, "No sessions found.", &SendOpts::default())
+                            .send_message(&chat_id, "No sessions found.", &reply_opts)
                             .await;
                     }
                 }
@@ -187,7 +190,7 @@ async fn handle_message(
                         .send_message(
                             &chat_id,
                             "Could not find session for this message.",
-                            &SendOpts::default(),
+                            &reply_opts,
                         )
                         .await;
                 }
@@ -202,7 +205,7 @@ async fn handle_message(
         if models.is_empty() {
             let _ = state
                 .tg
-                .send_message(&chat_id, "Failed to fetch model list.", &SendOpts::default())
+                .send_message(&chat_id, "Failed to fetch model list.", &reply_opts)
                 .await;
             return;
         }
@@ -211,7 +214,7 @@ async fn handle_message(
             .collect();
         let _ = state
             .tg
-            .send_message(&chat_id, &lines.join("\n"), &SendOpts::default())
+            .send_message(&chat_id, &lines.join("\n"), &reply_opts)
             .await;
         return;
     }
@@ -222,7 +225,7 @@ async fn handle_message(
         if models.is_empty() {
             let _ = state
                 .tg
-                .send_message(&chat_id, "Failed to fetch model list.", &SendOpts::default())
+                .send_message(&chat_id, "Failed to fetch model list.", &reply_opts)
                 .await;
             return;
         }
@@ -233,6 +236,8 @@ async fn handle_message(
                 &chat_id,
                 "Select a model:",
                 &SendOpts {
+                    reply_to_message_id: Some(msg_id),
+                    message_thread_id: thread_id,
                     reply_markup: Some(markup),
                     ..Default::default()
                 },
@@ -267,7 +272,7 @@ async fn handle_message(
             state.access_cache.save(&access);
             let _ = state
                 .tg
-                .send_message(&chat_id, &reply, &SendOpts::default())
+                .send_message(&chat_id, &reply, &reply_opts)
                 .await;
             return;
         }
@@ -400,7 +405,11 @@ async fn process_message(
                     .send_message(
                         chat_id,
                         "Failed to create session. Please try again.",
-                        &SendOpts::default(),
+                        &SendOpts {
+                            reply_to_message_id: Some(msg_id),
+                            message_thread_id: msg.message_thread_id,
+                            ..Default::default()
+                        },
                     )
                     .await;
                 return;
@@ -558,13 +567,13 @@ pub async fn dispatch_prompt(
     });
 }
 
-async fn handle_stat(state: &mut BotState, chat_id: &str, session_id: &str) {
+async fn handle_stat(state: &mut BotState, chat_id: &str, session_id: &str, opts: &SendOpts) {
     let messages = match state.oc.session_messages(session_id).await {
         Ok(m) => m,
         Err(e) => {
             let _ = state
                 .tg
-                .send_message(chat_id, &format!("Failed to fetch stats: {}", e), &SendOpts::default())
+                .send_message(chat_id, &format!("Failed to fetch stats: {}", e), opts)
                 .await;
             return;
         }
@@ -631,7 +640,7 @@ async fn handle_stat(state: &mut BotState, chat_id: &str, session_id: &str) {
 
     let _ = state
         .tg
-        .send_message(chat_id, &stat_text, &SendOpts::default())
+        .send_message(chat_id, &stat_text, opts)
         .await;
 }
 
