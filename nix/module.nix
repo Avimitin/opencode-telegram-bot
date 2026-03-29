@@ -58,7 +58,13 @@ in
 
     environmentFile = lib.mkOption {
       type = lib.types.path;
-      description = "Path to environment file containing API keys (e.g. ZHIPU_API_KEY). Loaded via systemd EnvironmentFile=.";
+      description = ''
+        Path to an environment file loaded via systemd EnvironmentFile=.
+        Must contain TELEGRAM_BOT_TOKEN and any provider API keys, e.g.:
+
+          TELEGRAM_BOT_TOKEN=123456789:AAH...
+          ANTHROPIC_API_KEY=sk-ant-...
+      '';
     };
 
     sandbox = lib.mkOption {
