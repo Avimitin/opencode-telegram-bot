@@ -20,6 +20,7 @@ pub struct StreamState {
     pub text: String,
     pub phase: Phase,
     pub last_stream_update: Instant,
+    pub last_activity: Instant,
     pub created_at: Instant,
 }
 
@@ -47,6 +48,7 @@ impl StreamState {
             text: String::new(),
             phase: Phase::Idle,
             last_stream_update: Instant::now() - std::time::Duration::from_secs(10),
+            last_activity: Instant::now(),
             created_at: Instant::now(),
         }
     }

@@ -137,7 +137,7 @@ async fn main() {
                 let stale: Vec<String> = state
                     .active_streams
                     .iter()
-                    .filter(|(_, s)| s.created_at.elapsed().as_secs() > 300)
+                    .filter(|(_, s)| s.last_activity.elapsed().as_secs() > 300)
                     .map(|(k, _)| k.clone())
                     .collect();
                 for id in stale {
@@ -218,6 +218,7 @@ async fn handle_sse_event(state: &mut BotState, event: SseEvent) {
         let part_type = part.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
         if let Some(stream) = state.active_streams.get_mut(&session_id) {
+            stream.last_activity = std::time::Instant::now();
             match part_type {
                 "reasoning" => {
                     if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
