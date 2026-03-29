@@ -7,7 +7,17 @@ use crate::session::BoundedMap;
 use crate::stream::StreamState;
 use crate::telegram::{CallbackQuery, Message, SendOpts, TelegramClient, Update};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+
+pub struct QueuedMessage {
+    pub chat_id: String,
+    pub msg_id: i64,
+    pub thread_id: Option<i64>,
+    pub is_dm: bool,
+    pub session_id: String,
+    pub parts: Vec<PromptPart>,
+    pub model: Option<ModelRef>,
+}
 
 pub struct BotState {
     pub tg: TelegramClient,
@@ -17,6 +27,7 @@ pub struct BotState {
     pub msg_sessions: BoundedMap<String>,
     pub msg_model_override: BoundedMap<String>,
     pub active_streams: HashMap<String, StreamState>,
+    pub pending_queue: HashMap<String, VecDeque<QueuedMessage>>,
     pub bot_id: i64,
     pub bot_username: String,
 }
@@ -375,34 +386,8 @@ async fn process_message(
         chat_id, msg_id, safe_username, sender_id, ts, quoted_context, safe_text
     );
 
-    // Set up streaming
     let thread_id = msg.message_thread_id;
     let is_dm = msg.chat.chat_type == "private";
-
-    let mut placeholder_msg_id: Option<i64> = None;
-    if !is_dm {
-        let mut opts = SendOpts {
-            reply_to_message_id: Some(msg_id),
-            ..Default::default()
-        };
-        if let Some(tid) = thread_id {
-            opts.message_thread_id = Some(tid);
-        }
-        if let Ok(sent) = state.tg.send_message(chat_id, "⏳", &opts).await {
-            placeholder_msg_id = Some(sent.message_id);
-        }
-    }
-
-    state.active_streams.insert(
-        session_id.clone(),
-        StreamState::new(
-            chat_id.to_string(),
-            thread_id,
-            is_dm,
-            Some(msg_id),
-            placeholder_msg_id,
-        ),
-    );
 
     // Build prompt parts
     let mut parts = vec![PromptPart {
@@ -431,10 +416,69 @@ async fn process_message(
         })
     });
 
+    // If session is busy, queue the message instead of sending immediately
+    if state.active_streams.contains_key(&session_id) {
+        state
+            .pending_queue
+            .entry(session_id)
+            .or_default()
+            .push_back(QueuedMessage {
+                chat_id: chat_id.to_string(),
+                msg_id,
+                thread_id,
+                is_dm,
+                session_id: String::new(), // filled by drain_queue
+                parts,
+                model,
+            });
+        return;
+    }
+
+    // Set up streaming
+    dispatch_prompt(state, chat_id, msg_id, thread_id, is_dm, &session_id, parts, model).await;
+}
+
+/// Send a prompt and set up the streaming state. Used both for immediate
+/// dispatch and for draining the pending queue.
+pub async fn dispatch_prompt(
+    state: &mut BotState,
+    chat_id: &str,
+    msg_id: i64,
+    thread_id: Option<i64>,
+    is_dm: bool,
+    session_id: &str,
+    parts: Vec<PromptPart>,
+    model: Option<ModelRef>,
+) {
+    let mut placeholder_msg_id: Option<i64> = None;
+    if !is_dm {
+        let mut opts = SendOpts {
+            reply_to_message_id: Some(msg_id),
+            ..Default::default()
+        };
+        if let Some(tid) = thread_id {
+            opts.message_thread_id = Some(tid);
+        }
+        if let Ok(sent) = state.tg.send_message(chat_id, "⏳", &opts).await {
+            placeholder_msg_id = Some(sent.message_id);
+        }
+    }
+
+    state.active_streams.insert(
+        session_id.to_string(),
+        StreamState::new(
+            chat_id.to_string(),
+            thread_id,
+            is_dm,
+            Some(msg_id),
+            placeholder_msg_id,
+        ),
+    );
+
     // Fire prompt — don't block. The SSE handler in main.rs will drive
     // streaming updates and finalize the message on session.idle.
     let oc_base = state.oc.base_url.clone();
-    let sid = session_id.clone();
+    let sid = session_id.to_string();
     tokio::spawn(async move {
         let client = OpencodeClient::new(&oc_base);
         if let Err(e) = client.session_prompt(&sid, parts, model).await {

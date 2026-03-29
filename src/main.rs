@@ -81,6 +81,7 @@ async fn main() {
         msg_sessions: BoundedMap::new(5000),
         msg_model_override: BoundedMap::new(5000),
         active_streams: HashMap::new(),
+        pending_queue: HashMap::new(),
         bot_id: me.id,
         bot_username,
     };
@@ -361,6 +362,27 @@ async fn finalize_stream(state: &mut BotState, session_id: &str, stream: StreamS
             .tg
             .set_message_reaction(chat_id, msg_id, &[])
             .await;
+    }
+
+    // Drain pending queue: dispatch the next queued message for this session
+    if let Some(queue) = state.pending_queue.get_mut(session_id) {
+        if let Some(queued) = queue.pop_front() {
+            if queue.is_empty() {
+                state.pending_queue.remove(session_id);
+            }
+            let sid = session_id.to_string();
+            message::dispatch_prompt(
+                state,
+                &queued.chat_id,
+                queued.msg_id,
+                queued.thread_id,
+                queued.is_dm,
+                &sid,
+                queued.parts,
+                queued.model,
+            )
+            .await;
+        }
     }
 }
 
