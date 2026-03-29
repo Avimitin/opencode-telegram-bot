@@ -147,25 +147,47 @@ async fn handle_message(
             return;
         }
 
+        // Try exact message match first, then fallback to most recent session in this chat
         let session_id = msg
             .reply_to_message
             .as_ref()
             .and_then(|r| {
                 let key = format!("{}:{}", chat_id, r.message_id);
                 state.msg_sessions.get(&key).cloned()
+            })
+            .or_else(|| {
+                state
+                    .msg_sessions
+                    .find_last_by_prefix(&format!("{}:", chat_id))
+                    .cloned()
             });
 
         if let Some(sid) = session_id {
             handle_stat(state, &chat_id, &sid).await;
         } else {
-            let _ = state
-                .tg
-                .send_message(
-                    &chat_id,
-                    "Could not find session for this message.",
-                    &SendOpts::default(),
-                )
-                .await;
+            // No cached session — try fetching the latest from opencode
+            match state.oc.session_list().await {
+                Ok(sessions) => {
+                    if let Some(s) = sessions.first() {
+                        handle_stat(state, &chat_id, &s.id).await;
+                    } else {
+                        let _ = state
+                            .tg
+                            .send_message(&chat_id, "No sessions found.", &SendOpts::default())
+                            .await;
+                    }
+                }
+                Err(_) => {
+                    let _ = state
+                        .tg
+                        .send_message(
+                            &chat_id,
+                            "Could not find session for this message.",
+                            &SendOpts::default(),
+                        )
+                        .await;
+                }
+            }
         }
         return;
     }
