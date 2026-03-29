@@ -12,7 +12,7 @@ mod telegram;
 
 use crate::access::AccessCache;
 use crate::config::Config;
-use crate::markdown::{split_message, thinking_to_md2, to_markdown_v2};
+use crate::markdown::{split_message, thinking_to_md2, to_markdown_v2, tools_to_md2};
 use crate::message::BotState;
 use crate::models::ModelCache;
 use crate::opencode::{OpencodeClient, OpencodeServer};
@@ -318,7 +318,7 @@ async fn finalize_stream(state: &mut BotState, session_id: &str, stream: StreamS
     // Build final message: tool calls + reasoning + response text
     let mut final_text = String::new();
     if !stream.tool_lines.is_empty() {
-        final_text.push_str(&to_markdown_v2(&stream.tool_lines.join("\n")));
+        final_text.push_str(&tools_to_md2(&stream.tool_lines.join("\n")));
         final_text.push_str("\n\n");
     }
     if !stream.reasoning.is_empty() {

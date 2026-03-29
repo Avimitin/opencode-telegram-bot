@@ -145,6 +145,25 @@ fn convert_text_segment(text: &str) -> String {
     t
 }
 
+/// Format tool call lines as MarkdownV2 expandable blockquote.
+pub fn tools_to_md2(text: &str) -> String {
+    let escaped = escape_md2(text);
+    let lines: Vec<&str> = escaped.lines().collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let prefix = if i == 0 { ">" } else { ">" };
+            let suffix = if i == lines.len() - 1 { "||" } else { "" };
+            format!("{}{}{}", prefix, line, suffix)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Format thinking/reasoning text as MarkdownV2 expandable blockquote.
 pub fn thinking_to_md2(text: &str) -> String {
     let escaped = escape_md2(text);
