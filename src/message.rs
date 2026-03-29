@@ -353,16 +353,6 @@ async fn process_message(
         clean_text
     };
 
-    // React to acknowledge
-    let _ = state
-        .tg
-        .set_message_reaction(
-            chat_id,
-            msg_id,
-            &[json!({"type": "emoji", "emoji": "👀"})],
-        )
-        .await;
-
     // Resolve session
     let mut session_id: Option<String> = None;
 
@@ -529,19 +519,22 @@ pub async fn dispatch_prompt(
     parts: Vec<PromptPart>,
     model: Option<ModelRef>,
 ) {
+    // Detect language from prompt text for the placeholder
+    let has_cjk = parts.first()
+        .and_then(|p| p.text.as_ref())
+        .map(|t| t.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c)))
+        .unwrap_or(false);
+    let placeholder = if has_cjk { "思考中…" } else { "Thinking…" };
+
     let mut placeholder_msg_id: Option<i64> = None;
-    if !is_dm {
-        let mut opts = SendOpts {
-            reply_to_message_id: Some(msg_id),
-            reply_markup: Some(stop_button(session_id)),
-            ..Default::default()
-        };
-        if let Some(tid) = thread_id {
-            opts.message_thread_id = Some(tid);
-        }
-        if let Ok(sent) = state.tg.send_message(chat_id, "⏳", &opts).await {
-            placeholder_msg_id = Some(sent.message_id);
-        }
+    let opts = SendOpts {
+        reply_to_message_id: Some(msg_id),
+        message_thread_id: thread_id,
+        reply_markup: Some(stop_button(session_id)),
+        ..Default::default()
+    };
+    if let Ok(sent) = state.tg.send_message(chat_id, placeholder, &opts).await {
+        placeholder_msg_id = Some(sent.message_id);
     }
 
     state.active_streams.insert(

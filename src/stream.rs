@@ -14,7 +14,6 @@ pub struct StreamState {
     pub is_dm: bool,
     pub msg_id: Option<i64>,
     pub stream_msg_id: Option<i64>,
-    pub tool_msg_id: Option<i64>,
     pub tool_lines: Vec<String>,
     pub reasoning: String,
     pub text: String,
@@ -43,7 +42,6 @@ impl StreamState {
             is_dm,
             msg_id,
             stream_msg_id,
-            tool_msg_id: None,
             tool_lines: Vec::new(),
             reasoning: String::new(),
             text: String::new(),
@@ -69,14 +67,38 @@ impl StreamState {
     }
 
     pub fn display_text(&self) -> Option<String> {
-        let text = match self.phase {
-            Phase::Reasoning => format!("💭 {}", self.reasoning),
-            Phase::Text => self.text.clone(),
-            _ => return None,
-        };
-        if text.is_empty() {
+        let mut parts = Vec::new();
+
+        // Tool calls section
+        if !self.tool_lines.is_empty() {
+            parts.push(self.tool_lines.join("\n"));
+        }
+
+        // Current phase content
+        match self.phase {
+            Phase::Reasoning => {
+                if !self.reasoning.is_empty() {
+                    parts.push(format!("💭 {}", self.reasoning));
+                }
+            }
+            Phase::Text => {
+                if !self.text.is_empty() {
+                    parts.push(self.text.clone());
+                }
+            }
+            Phase::Idle => {
+                // Tool-only updates (no reasoning/text yet)
+                if parts.is_empty() {
+                    return None;
+                }
+            }
+        }
+
+        if parts.is_empty() {
             return None;
         }
+
+        let text = parts.join("\n\n");
         // Truncate for Telegram message size limit
         if text.len() > 3900 {
             Some(format!("...{}", &text[text.len() - 3900..]))

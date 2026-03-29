@@ -276,24 +276,6 @@ impl TelegramClient {
         Ok(())
     }
 
-    pub async fn set_message_reaction(
-        &self,
-        chat_id: &str,
-        message_id: i64,
-        reactions: &[Value],
-    ) -> Result<(), String> {
-        let _: Value = self
-            .call(
-                "setMessageReaction",
-                json!({
-                    "chat_id": chat_id,
-                    "message_id": message_id,
-                    "reaction": reactions,
-                }),
-            )
-            .await?;
-        Ok(())
-    }
 
     pub async fn answer_callback_query(
         &self,

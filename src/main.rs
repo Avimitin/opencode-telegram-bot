@@ -118,6 +118,9 @@ async fn main() {
             result = state.tg.get_updates(update_offset, 5) => {
                 match result {
                     Ok(updates) => {
+                        if !updates.is_empty() {
+                            eprintln!("Telegram: {} update(s)", updates.len());
+                        }
                         for update in &updates {
                             update_offset = update.update_id + 1;
                             message::handle_update(&mut state, update).await;
@@ -197,11 +200,17 @@ async fn handle_sse_event(state: &mut BotState, event: SseEvent) {
         .unwrap_or("");
 
     // Log non-heartbeat SSE events for diagnostics
-    if event_type != "server.heartbeat" && event_type != "server.connected" {
+    if event_type != "server.heartbeat" && event_type != "server.connected"
+        && event_type != "message.part.delta"
+    {
         let data_str = event.data.to_string();
         let limit = if event_type == "session.error" { 500 } else { 200 };
-        eprintln!("SSE event: type={} data={}", event_type,
-            &data_str[..data_str.len().min(limit)]);
+        let end = data_str.char_indices()
+            .take_while(|&(i, _)| i <= limit)
+            .last()
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0);
+        eprintln!("SSE event: type={} data={}", event_type, &data_str[..end]);
     }
 
     if event_type == "message.part.updated" {
@@ -258,33 +267,15 @@ async fn handle_sse_event(state: &mut BotState, event: SseEvent) {
                         stream
                             .tool_lines
                             .push(format!("🔧 {} — {}", tool_name, title));
-
-                        let tool_text = stream.tool_lines.join("\n");
-                        let chat_id = stream.chat_id.clone();
-
-                        if let Some(tool_msg_id) = stream.tool_msg_id {
-                            let _ = state
-                                .tg
-                                .edit_message_text(&chat_id, tool_msg_id, &tool_text)
-                                .await;
-                        } else {
-                            let mut opts = SendOpts::default();
-                            if let Some(tid) = stream.thread_id {
-                                opts.message_thread_id = Some(tid);
-                            }
-                            if let Ok(sent) =
-                                state.tg.send_message(&chat_id, &tool_text, &opts).await
-                            {
-                                stream.tool_msg_id = Some(sent.message_id);
-                            }
-                        }
                     }
                 }
                 _ => {}
             }
 
-            // Throttled streaming display
-            if (part_type == "reasoning" || part_type == "text") && stream.should_update() {
+            // Throttled streaming display — update single message with all content
+            let should_update = matches!(part_type, "reasoning" | "text" | "tool")
+                && stream.should_update();
+            if should_update {
                 if let Some(display) = stream.display_text() {
                     let chat_id = stream.chat_id.clone();
                     if let Some(stream_msg_id) = stream.stream_msg_id {
@@ -367,11 +358,8 @@ async fn finalize_stream(state: &mut BotState, session_id: &str, stream: StreamS
         stream.error.as_deref().unwrap_or("none"),
     );
 
-    // Delete streaming placeholder and tool message
+    // Delete streaming placeholder
     if let Some(mid) = stream.stream_msg_id {
-        let _ = state.tg.delete_message(chat_id, mid).await;
-    }
-    if let Some(mid) = stream.tool_msg_id {
         let _ = state.tg.delete_message(chat_id, mid).await;
     }
 
@@ -449,14 +437,6 @@ async fn finalize_stream(state: &mut BotState, session_id: &str, stream: StreamS
                 break; // Already sent everything as plain text
             }
         }
-    }
-
-    // Clear reaction
-    if let Some(msg_id) = stream.msg_id {
-        let _ = state
-            .tg
-            .set_message_reaction(chat_id, msg_id, &[])
-            .await;
     }
 
     // Drain pending queue: dispatch the next queued message for this session
