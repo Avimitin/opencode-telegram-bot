@@ -10,6 +10,7 @@ mod sse;
 mod stream;
 mod telegram;
 
+use anyhow::Context;
 use crate::access::AccessCache;
 use crate::config::Config;
 use crate::markdown::{split_message, thinking_to_md2, to_markdown_v2, tools_to_md2};
@@ -51,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
         .await;
 
     // Subscribe to SSE events
-    let mut sse_stream = connect_sse(&oc).await;
+    let mut sse_stream = connect_sse(&oc).await?;
     println!("SSE subscriber connected");
 
     // Build bot state
@@ -90,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
                     Some(event) => handle_sse_event(&mut state, event).await,
                     None => {
                         eprintln!("SSE disconnected, reconnecting...");
-                        sse_stream = reconnect_sse(&state.oc).await;
+                        sse_stream = reconnect_sse(&state.oc).await?;
                     }
                 }
             }
@@ -137,32 +138,29 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn connect_sse(oc: &OpencodeClient) -> SseStream {
-    match oc.event_subscribe().await {
-        Ok(r) => SseStream::new(r),
-        Err(e) => {
-            eprintln!("Failed to subscribe to SSE: {}", e);
-            std::process::exit(1);
-        }
-    }
+async fn connect_sse(oc: &OpencodeClient) -> anyhow::Result<SseStream> {
+    let resp = oc.event_subscribe().await.context("subscribe to SSE")?;
+    Ok(SseStream::new(resp))
 }
 
-/// Reconnect to SSE with exponential backoff (capped at 30s).
-async fn reconnect_sse(oc: &OpencodeClient) -> SseStream {
+/// Reconnect to SSE with exponential backoff (capped at 30s, max 10 retries).
+async fn reconnect_sse(oc: &OpencodeClient) -> anyhow::Result<SseStream> {
+    const MAX_RETRIES: u32 = 10;
     let mut delay = std::time::Duration::from_secs(2);
-    loop {
+    for attempt in 1..=MAX_RETRIES {
         tokio::time::sleep(delay).await;
         match oc.event_subscribe().await {
             Ok(r) => {
                 eprintln!("SSE reconnected");
-                return SseStream::new(r);
+                return Ok(SseStream::new(r));
             }
             Err(e) => {
-                eprintln!("SSE reconnect failed: {}", e);
+                eprintln!("SSE reconnect failed (attempt {}/{}): {}", attempt, MAX_RETRIES, e);
                 delay = (delay * 2).min(std::time::Duration::from_secs(30));
             }
         }
     }
+    anyhow::bail!("SSE reconnect failed after {} attempts", MAX_RETRIES)
 }
 
 async fn handle_sse_event(state: &mut BotState, event: SseEvent) {
