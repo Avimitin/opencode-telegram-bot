@@ -87,13 +87,15 @@ in
     };
     users.groups.${cfg.group} = {};
 
-    systemd.tmpfiles.rules = [
-      "d ${cfg.stateDir} 0700 ${cfg.user} ${cfg.group} -"
-      "d ${cfg.stateDir}/.opencode 0700 ${cfg.user} ${cfg.group} -"
-      "d ${cfg.stateDir}/.opencode/channels 0700 ${cfg.user} ${cfg.group} -"
-      "d ${cfg.stateDir}/.opencode/channels/telegram 0700 ${cfg.user} ${cfg.group} -"
-      "d ${cfg.stateDir}/.opencode/channels/telegram/approved 0700 ${cfg.user} ${cfg.group} -"
-    ];
+    systemd.tmpfiles.rules = builtins.map
+      (dir: "d ${dir} 0700 ${cfg.user} ${cfg.group} -")
+      [
+        cfg.stateDir
+        "${cfg.stateDir}/.opencode"
+        "${cfg.stateDir}/.opencode/channels"
+        "${cfg.stateDir}/.opencode/channels/telegram"
+        "${cfg.stateDir}/.opencode/channels/telegram/approved"
+      ];
 
     systemd.services.opencode-telegram = {
       description = "OpenCode Telegram Bot";
