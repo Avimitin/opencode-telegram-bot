@@ -223,7 +223,7 @@ pollApproved(bot)
 
 // Register bot commands for autocomplete
 bot.api.setMyCommands([
-  { command: "models", description: "List available models" },
+  { command: "list_models", description: "List available models" },
   { command: "model", description: "Set model: /model provider/model" },
 ]).catch((e) => console.error("Failed to set commands:", e))
 
@@ -357,13 +357,117 @@ async function downloadTelegramFile(fileId: string, mime: string, filename: stri
   }
 }
 
+// ── Model picker helpers ─────────────────────────────────────────────────────
+
+type ModelEntry = { fullId: string; label: string }
+let cachedModels: ModelEntry[] | undefined
+
+async function getModelList(): Promise<ModelEntry[]> {
+  if (cachedModels) return cachedModels
+  const result = await opencode.client.provider.list()
+  if (result.error || !result.data) return []
+  const models: ModelEntry[] = []
+  for (const provider of result.data.all) {
+    // Only include providers whose env vars are configured
+    const envConfigured = provider.env.length === 0 || provider.env.some((e: string) => !!process.env[e])
+    if (!envConfigured) continue
+    for (const model of Object.values(provider.models)) {
+      const fullId = `${provider.id}/${model.id}`
+      const tags: string[] = []
+      if (model.reasoning) tags.push("🧠")
+      const modalities = (model as any).modalities?.input ?? []
+      if (modalities.includes("image")) tags.push("🖼")
+      if (model.attachment) tags.push("📎")
+      const tagStr = tags.length ? ` ${tags.join("")}` : ""
+      const label = `${fullId}${tagStr}`
+      models.push({ fullId, label })
+    }
+  }
+  cachedModels = models
+  // Refresh cache every 5 min
+  setTimeout(() => { cachedModels = undefined }, 300_000)
+  return models
+}
+
+const MODELS_PER_PAGE = 6 // 6 rows of models per page
+
+function buildModelKeyboard(models: ModelEntry[], page: number) {
+  const totalPages = Math.ceil(models.length / MODELS_PER_PAGE)
+  const start = page * MODELS_PER_PAGE
+  const pageModels = models.slice(start, start + MODELS_PER_PAGE)
+  const rows: { text: string; callback_data: string }[][] = []
+
+  // Top nav row
+  if (totalPages > 1) {
+    if (page > 0) {
+      rows.push([{ text: `⬅️ Page ${page}`, callback_data: `modelpage:${page - 1}` }])
+    }
+  }
+
+  // One model per row
+  for (const m of pageModels) {
+    rows.push([{ text: m.label, callback_data: `model:${m.fullId}` }])
+  }
+
+  // Bottom nav row
+  if (totalPages > 1) {
+    if (page < totalPages - 1) {
+      rows.push([{ text: `Page ${page + 2} ➡️`, callback_data: `modelpage:${page + 1}` }])
+    }
+  }
+
+  return { inline_keyboard: rows }
+}
+
+// ── Message handling ─────────────────────────────────────────────────────────
+
+// Strip @botname from start of text
+function stripMention(text: string): string {
+  const access = loadAccess()
+  const patterns = access.mentionPatterns ?? []
+  for (const p of patterns) {
+    if (text.trimStart().startsWith(p)) {
+      return text.trimStart().slice(p.length).trimStart()
+    }
+  }
+  return text
+}
+
 // Handle messages
 async function handleMessage(ctx: Context, text: string, files: AttachedFile[] = []) {
-  const gateResult = gate(ctx)
   const chatId = String(ctx.chat?.id ?? "")
   const senderId = String(ctx.from?.id ?? "")
 
-  // Gate checks are immediate (no queue needed)
+  // Handle bot commands before gate (commands don't need allowlist)
+  // Note: in groups, Telegram may append @botname to commands like /list_models@botname
+  const cmd = stripMention(text).trimStart().replace(/@\S+/, "").trimStart()
+
+  if (cmd.match(/^\/list_models(\s|$)/)) {
+    const models = await getModelList()
+    if (models.length === 0) {
+      await ctx.reply("Failed to fetch model list.").catch(() => {})
+      return
+    }
+    const lines = ["Available models:\n"]
+    for (const m of models) lines.push(`  ${m.fullId}`)
+    await ctx.reply(lines.join("\n")).catch(() => {})
+    return
+  }
+
+  if (cmd.match(/^\/model\s*$/)) {
+    const models = await getModelList()
+    if (models.length === 0) {
+      await ctx.reply("Failed to fetch model list.").catch(() => {})
+      return
+    }
+    await ctx.reply("Select a model:", {
+      reply_markup: buildModelKeyboard(models, 0),
+    }).catch(() => {})
+    return
+  }
+
+  // Gate check
+  const gateResult = gate(ctx)
   if (gateResult === "deny") return
   if (gateResult === "pair") {
     const msg = handlePairing(senderId, chatId)
@@ -380,41 +484,8 @@ async function processMessage(ctx: Context, text: string, chatId: string, sender
   const replyToBot = replyTo?.from?.id === bot.botInfo?.id
   const msgId = ctx.message?.message_id
 
-  // Handle /models command — list available models
-  if (text.replace(/@\S+\s*/, "").trimStart().startsWith("/models")) {
-    const result = await opencode.client.provider.list()
-    if (result.error || !result.data) {
-      await ctx.reply("Failed to fetch model list.").catch(() => {})
-      return
-    }
-    const lines: string[] = ["Available models:\n"]
-    for (const provider of result.data.all) {
-      const modelEntries = Object.values(provider.models)
-      if (modelEntries.length === 0) continue
-      for (const model of modelEntries) {
-        const tags: string[] = []
-        if (model.attachment) tags.push("📎")
-        if (model.reasoning) tags.push("🧠")
-        const modalities = model.modalities?.input ?? []
-        if (modalities.includes("image")) tags.push("🖼")
-        lines.push(`  ${provider.id}/${model.id} ${tags.join("")}`)
-      }
-    }
-    await ctx.reply(lines.join("\n")).catch(() => {})
-    return
-  }
-
   // Parse /model command: /model=xxx or /model xxx
-  // Strip @botname prefix first for group messages
-  let cleanText = text
-  const accessData = loadAccess()
-  const mentionPatterns = accessData.mentionPatterns ?? []
-  for (const p of mentionPatterns) {
-    if (cleanText.trimStart().startsWith(p)) {
-      cleanText = cleanText.trimStart().slice(p.length).trimStart()
-      break
-    }
-  }
+  let cleanText = stripMention(text)
 
   let modelOverride: string | undefined
   const modelMatch = cleanText.match(/^\/model[= ](\S+)\s*(.*)$/s)
@@ -770,6 +841,28 @@ bot.on("message:video", (ctx) => handleMessage(ctx, ctx.message.caption ?? "(vid
 bot.on("message:sticker", (ctx) => {
   const emoji = ctx.message.sticker.emoji ? ` ${ctx.message.sticker.emoji}` : ""
   return handleMessage(ctx, `(sticker${emoji})`)
+})
+
+// Handle model picker callbacks
+bot.on("callback_query:data", async (ctx) => {
+  const data = ctx.callbackQuery.data
+  if (data.startsWith("model:")) {
+    const model = data.slice("model:".length)
+    const chatId = String(ctx.chat?.id ?? "")
+    await ctx.editMessageText(`Model set to ${model}. Reply to this message to start a new session.`).catch(() => {})
+    const msgId = ctx.callbackQuery.message?.message_id
+    if (msgId) {
+      msgModelOverride.set(`${chatId}:${msgId}`, model)
+    }
+    await ctx.answerCallbackQuery({ text: `Selected: ${model}` }).catch(() => {})
+  } else if (data.startsWith("modelpage:")) {
+    const page = Number(data.slice("modelpage:".length))
+    const models = await getModelList()
+    await ctx.editMessageReplyMarkup({ reply_markup: buildModelKeyboard(models, page) }).catch(() => {})
+    await ctx.answerCallbackQuery().catch(() => {})
+  } else if (data === "noop") {
+    await ctx.answerCallbackQuery().catch(() => {})
+  }
 })
 
 // Start bot
