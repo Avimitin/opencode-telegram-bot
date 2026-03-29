@@ -128,6 +128,9 @@ in
       environment = {
         HOME = cfg.stateDir;
         TELEGRAM_STATE_DIR = "${cfg.stateDir}/.opencode/channels/telegram";
+        # The bot talks to a local opencode server over HTTP.
+        # Proxy variables must not intercept localhost traffic.
+        no_proxy = "127.0.0.1,localhost";
       } // cfg.extraEnvironment;
     };
   };
