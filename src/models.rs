@@ -19,14 +19,11 @@ impl ModelCache {
 
     /// Returns the cached model list, fetching once on first call.
     /// The list is static for the lifetime of the opencode server.
-    pub async fn get_models(&mut self, client: &OpencodeClient) -> anyhow::Result<Vec<ModelEntry>> {
-        if let Some(ref models) = self.models {
-            return Ok(models.clone());
+    pub async fn get_models(&mut self, client: &OpencodeClient) -> anyhow::Result<&[ModelEntry]> {
+        if self.models.is_none() {
+            self.models = Some(fetch_models(client).await?);
         }
-
-        let models = fetch_models(client).await?;
-        self.models = Some(models.clone());
-        Ok(models)
+        Ok(self.models.as_deref().unwrap())
     }
 }
 
@@ -66,15 +63,6 @@ async fn fetch_models(client: &OpencodeClient) -> anyhow::Result<Vec<ModelEntry>
         }
     }
     Ok(models)
-}
-
-impl Clone for ModelEntry {
-    fn clone(&self) -> Self {
-        ModelEntry {
-            full_id: self.full_id.clone(),
-            label: self.label.clone(),
-        }
-    }
 }
 
 pub fn build_model_keyboard(models: &[ModelEntry], page: usize) -> Value {
