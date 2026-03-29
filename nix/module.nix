@@ -34,11 +34,6 @@ in
       description = "State directory for opencode and Telegram channel data.";
     };
 
-    botTokenFile = lib.mkOption {
-      type = lib.types.path;
-      description = "Path to a file containing the Telegram bot token.";
-    };
-
     settings = lib.mkOption {
       type = lib.types.attrs;
       default = {};
@@ -154,9 +149,6 @@ in
         cat > ${cfg.stateDir}/.opencode/channels/telegram/access.json <<'ACCESSEOF'
         ${builtins.toJSON cfg.accessConfig}
         ACCESSEOF
-
-        echo "TELEGRAM_BOT_TOKEN=$(cat ${cfg.botTokenFile})" > ${cfg.stateDir}/.opencode/channels/telegram/.env
-        chmod 600 ${cfg.stateDir}/.opencode/channels/telegram/.env
       '';
 
       environment = {
