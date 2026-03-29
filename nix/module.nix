@@ -71,6 +71,17 @@ in
       default = {};
       description = "Extra environment variables for the service.";
     };
+
+    sandbox = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Enable systemd sandboxing and hardening.
+        Restricts the bot to its stateDir and blocks access to the rest
+        of the filesystem. Disable if you want opencode to manage files
+        outside the state directory (e.g. full system access).
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -96,23 +107,57 @@ in
       wants = [ "network-online.target" ];
       wantedBy = [ "multi-user.target" ];
 
-      serviceConfig = {
-        Type = "simple";
-        User = cfg.user;
-        Group = cfg.group;
-        WorkingDirectory = cfg.stateDir;
-        ExecStart = "${cfg.package}/bin/opencode-telegram-bot";
-        Restart = "on-failure";
-        RestartSec = 10;
+      serviceConfig = lib.mkMerge [
+        {
+          Type = "simple";
+          User = cfg.user;
+          Group = cfg.group;
+          WorkingDirectory = cfg.stateDir;
+          ExecStart = "${cfg.package}/bin/opencode-telegram-bot";
+          Restart = "on-failure";
+          RestartSec = 10;
+        }
 
-        NoNewPrivileges = true;
-        ProtectSystem = "strict";
-        ProtectHome = "yes";
-        PrivateTmp = true;
-        ReadWritePaths = [ cfg.stateDir ];
-      } // lib.optionalAttrs (cfg.environmentFile != null) {
-        EnvironmentFile = cfg.environmentFile;
-      };
+        (lib.mkIf (cfg.environmentFile != null) {
+          EnvironmentFile = cfg.environmentFile;
+        })
+
+        # Sandboxing and hardening
+        (lib.mkIf cfg.sandbox {
+          ProtectSystem = lib.mkDefault "strict";
+          ProtectHome = lib.mkDefault true;
+          PrivateTmp = lib.mkDefault true;
+          PrivateDevices = lib.mkDefault true;
+          PrivateMounts = lib.mkDefault true;
+          ProtectClock = lib.mkDefault true;
+          ProtectControlGroups = lib.mkDefault true;
+          ProtectHostname = lib.mkDefault true;
+          ProtectKernelLogs = lib.mkDefault true;
+          ProtectKernelModules = lib.mkDefault true;
+          ProtectKernelTunables = lib.mkDefault true;
+          ProtectProc = lib.mkDefault "invisible";
+          NoNewPrivileges = lib.mkDefault true;
+          RestrictNamespaces = lib.mkDefault true;
+          RestrictRealtime = lib.mkDefault true;
+          RestrictSUIDSGID = lib.mkDefault true;
+          RemoveIPC = lib.mkDefault true;
+          LockPersonality = lib.mkDefault true;
+          UMask = lib.mkDefault "0077";
+          CapabilityBoundingSet = lib.mkDefault [ "" ];
+          DeviceAllow = lib.mkDefault [ "" ];
+          RestrictAddressFamilies = lib.mkDefault [
+            "AF_INET"
+            "AF_INET6"
+            "AF_UNIX"
+          ];
+          SystemCallFilter = lib.mkDefault [
+            "@system-service"
+            "~@privileged"
+            "~@resources"
+          ];
+          ReadWritePaths = [ cfg.stateDir ];
+        })
+      ];
 
       preStart = ''
         cp ${opencodeConfigFile} ${cfg.stateDir}/opencode.json
