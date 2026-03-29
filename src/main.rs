@@ -350,11 +350,42 @@ async fn finalize_stream(state: &mut BotState, session_id: &str, stream: StreamS
     };
     let chunks = split_message(&final_text, 4096);
     for chunk in &chunks {
-        if let Ok(sent) = state.tg.send_message(chat_id, chunk, &send_opts).await {
-            state.msg_sessions.insert(
-                format!("{}:{}", chat_id, sent.message_id),
-                session_id.to_string(),
-            );
+        match state.tg.send_message(chat_id, chunk, &send_opts).await {
+            Ok(sent) => {
+                state.msg_sessions.insert(
+                    format!("{}:{}", chat_id, sent.message_id),
+                    session_id.to_string(),
+                );
+            }
+            Err(e) => {
+                eprintln!("MarkdownV2 send failed: {}", e);
+                // Fallback: send as plain text without formatting
+                let plain_opts = SendOpts {
+                    reply_to_message_id: stream.msg_id,
+                    message_thread_id: stream.thread_id,
+                    ..Default::default()
+                };
+                // Build plain text from raw content
+                let mut plain = String::new();
+                if !stream.tool_lines.is_empty() {
+                    plain.push_str(&stream.tool_lines.join("\n"));
+                    plain.push_str("\n\n");
+                }
+                if !stream.reasoning.is_empty() {
+                    plain.push_str(&format!("💭 {}\n\n", stream.reasoning));
+                }
+                plain.push_str(&response_text);
+                let plain_chunks = split_message(&plain, 4096);
+                for pc in &plain_chunks {
+                    if let Ok(sent) = state.tg.send_message(chat_id, pc, &plain_opts).await {
+                        state.msg_sessions.insert(
+                            format!("{}:{}", chat_id, sent.message_id),
+                            session_id.to_string(),
+                        );
+                    }
+                }
+                break; // Already sent everything as plain text
+            }
         }
     }
 
