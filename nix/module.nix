@@ -66,12 +66,6 @@ in
       description = "Path to environment file for API keys (systemd EnvironmentFile=).";
     };
 
-    extraEnvironment = lib.mkOption {
-      type = lib.types.attrsOf lib.types.str;
-      default = {};
-      description = "Extra environment variables for the service.";
-    };
-
     sandbox = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -173,7 +167,7 @@ in
         # The bot talks to a local opencode server over HTTP.
         # Proxy variables must not intercept localhost traffic.
         no_proxy = "127.0.0.1,localhost";
-      } // cfg.extraEnvironment;
+      };
     };
   };
 }
