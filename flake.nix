@@ -17,9 +17,9 @@
 
       packages = forAllSystems (system:
         let pkgs = pkgsFor system;
-        in {
-          default = pkgs.callPackage ./nix/package.nix {};
+        in rec {
           opencode-telegram-bot = pkgs.callPackage ./nix/package.nix {};
+          default = opencode-telegram-bot;
         }
       );
 
