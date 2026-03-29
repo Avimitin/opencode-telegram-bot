@@ -1,10 +1,10 @@
 use crate::access::{self, AccessCache, GateResult};
 use crate::download::{download_telegram_file, AttachedFile};
-use crate::markdown::{sanitize_for_xml, split_message, thinking_to_md2, to_markdown_v2};
+use crate::markdown::sanitize_for_xml;
 use crate::models::{build_model_keyboard, ModelCache};
 use crate::opencode::{ModelRef, OpencodeClient, PromptPart};
 use crate::session::BoundedMap;
-use crate::stream::{Phase, StreamState};
+use crate::stream::StreamState;
 use crate::telegram::{CallbackQuery, Message, SendOpts, TelegramClient, Update};
 use serde_json::json;
 use std::collections::HashMap;
@@ -399,7 +399,8 @@ async fn process_message(
         })
     });
 
-    // Fire prompt (don't await completion — SSE drives the streaming)
+    // Fire prompt — don't block. The SSE handler in main.rs will drive
+    // streaming updates and finalize the message on session.idle.
     let oc_base = state.oc.base_url.clone();
     let sid = session_id.clone();
     tokio::spawn(async move {
@@ -408,74 +409,6 @@ async fn process_message(
             eprintln!("Prompt error: {}", e);
         }
     });
-
-    // Wait for streaming to complete (driven by SSE in main loop)
-    // The main loop will resolve this when session.idle event arrives
-    let timeout = tokio::time::sleep(std::time::Duration::from_secs(300));
-    tokio::pin!(timeout);
-
-    loop {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-        let done = state
-            .active_streams
-            .get(&session_id)
-            .map(|s| s.phase == Phase::Done)
-            .unwrap_or(true);
-
-        if done {
-            break;
-        }
-
-        if timeout.is_elapsed() {
-            break;
-        }
-    }
-
-    let stream = state.active_streams.remove(&session_id);
-
-    if let Some(stream) = stream {
-        // Delete streaming placeholder and tool message
-        if let Some(mid) = stream.stream_msg_id {
-            let _ = state.tg.delete_message(chat_id, mid).await;
-        }
-        if let Some(mid) = stream.tool_msg_id {
-            let _ = state.tg.delete_message(chat_id, mid).await;
-        }
-
-        // Build final message
-        let mut final_text = String::new();
-        if !stream.reasoning.is_empty() {
-            final_text.push_str(&thinking_to_md2(&stream.reasoning));
-            final_text.push_str("\n\n");
-        }
-        let response_text = if stream.text.is_empty() {
-            "(no response)".to_string()
-        } else {
-            stream.text.clone()
-        };
-        final_text.push_str(&to_markdown_v2(&response_text));
-
-        // Send final message
-        let send_opts = SendOpts {
-            reply_to_message_id: Some(msg_id),
-            message_thread_id: thread_id,
-            parse_mode: Some("MarkdownV2".to_string()),
-            ..Default::default()
-        };
-        let chunks = split_message(&final_text, 4096);
-        for chunk in &chunks {
-            if let Ok(sent) = state.tg.send_message(chat_id, chunk, &send_opts).await {
-                state.msg_sessions.insert(
-                    format!("{}:{}", chat_id, sent.message_id),
-                    session_id.clone(),
-                );
-            }
-        }
-
-        // Clear reaction
-        let _ = state.tg.set_message_reaction(chat_id, msg_id, &[]).await;
-    }
 }
 
 async fn handle_callback(state: &mut BotState, cb: &CallbackQuery) {

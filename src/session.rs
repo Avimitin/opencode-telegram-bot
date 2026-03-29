@@ -42,13 +42,13 @@ impl<V> BoundedMap<V> {
     }
 
     /// Find the last value whose key starts with the given prefix.
+    /// Iterates from newest to oldest for fast lookups (typically O(1)).
     pub fn find_last_by_prefix(&self, prefix: &str) -> Option<&V> {
-        let mut result = None;
-        for key in &self.order {
+        for key in self.order.iter().rev() {
             if key.starts_with(prefix) {
-                result = self.map.get(key);
+                return self.map.get(key);
             }
         }
-        result
+        None
     }
 }

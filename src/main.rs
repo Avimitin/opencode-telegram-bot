@@ -12,12 +12,13 @@ mod telegram;
 
 use crate::access::AccessCache;
 use crate::config::Config;
+use crate::markdown::{split_message, thinking_to_md2, to_markdown_v2};
 use crate::message::BotState;
 use crate::models::ModelCache;
 use crate::opencode::{OpencodeClient, OpencodeServer};
 use crate::session::BoundedMap;
-use crate::sse::SseStream;
-use crate::stream::Phase;
+use crate::sse::{SseEvent, SseStream};
+use crate::stream::{Phase, StreamState};
 use crate::telegram::{SendOpts, TelegramClient};
 use serde_json::json;
 use std::collections::HashMap;
@@ -68,14 +69,7 @@ async fn main() {
         .await;
 
     // Subscribe to SSE events
-    let sse_response = match oc.event_subscribe().await {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("Failed to subscribe to SSE: {}", e);
-            std::process::exit(1);
-        }
-    };
-    let mut sse_stream = SseStream::new(sse_response);
+    let mut sse_stream = connect_sse(&oc).await;
     println!("SSE subscriber connected");
 
     // Build bot state
@@ -91,158 +85,258 @@ async fn main() {
         bot_username,
     };
 
-    println!("Telegram bot @{} is running!", me.username.as_deref().unwrap_or("?"));
+    println!(
+        "Telegram bot @{} is running!",
+        me.username.as_deref().unwrap_or("?")
+    );
 
-    // Main loop: poll Telegram updates and process SSE events
+    // Main loop: concurrently handle Telegram updates and SSE events via select!.
+    // This eliminates the deadlock where handle_update blocked the main loop,
+    // preventing SSE events (including session.idle) from ever being processed.
     let mut update_offset: i64 = 0;
-    let mut last_approved_poll = std::time::Instant::now();
+    let mut approved_interval = tokio::time::interval(std::time::Duration::from_secs(5));
+    let mut stale_interval = tokio::time::interval(std::time::Duration::from_secs(60));
 
     loop {
-        // Poll for Telegram updates (short timeout to interleave SSE processing)
-        match state.tg.get_updates(update_offset, 1).await {
-            Ok(updates) => {
-                for update in &updates {
-                    update_offset = update.update_id + 1;
-                    message::handle_update(&mut state, update).await;
+        tokio::select! {
+            biased;
+
+            // SSE events — high priority to keep streaming responsive
+            event = sse_stream.next_event() => {
+                match event {
+                    Some(event) => handle_sse_event(&mut state, event).await,
+                    None => {
+                        eprintln!("SSE disconnected, reconnecting...");
+                        sse_stream = reconnect_sse(&state.oc).await;
+                    }
                 }
             }
-            Err(e) => {
-                eprintln!("getUpdates error: {}", e);
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+            // Telegram updates
+            result = state.tg.get_updates(update_offset, 5) => {
+                match result {
+                    Ok(updates) => {
+                        for update in &updates {
+                            update_offset = update.update_id + 1;
+                            message::handle_update(&mut state, update).await;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("getUpdates error: {}", e);
+                    }
+                }
             }
-        }
 
-        // Process SSE events (non-blocking)
-        process_sse_events(&mut state, &mut sse_stream).await;
+            // Poll approved pairing directory
+            _ = approved_interval.tick() => {
+                poll_approved(&state.tg, &config.approved_dir).await;
+            }
 
-        // Poll approved pairing directory every 5 seconds
-        if last_approved_poll.elapsed().as_secs() >= 5 {
-            last_approved_poll = std::time::Instant::now();
-            poll_approved(&state.tg, &config.approved_dir).await;
+            // Clean up timed-out streams (failsafe for lost session.idle events)
+            _ = stale_interval.tick() => {
+                let stale: Vec<String> = state
+                    .active_streams
+                    .iter()
+                    .filter(|(_, s)| s.created_at.elapsed().as_secs() > 300)
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                for id in stale {
+                    if let Some(stream) = state.active_streams.remove(&id) {
+                        eprintln!("Stream {} timed out", id);
+                        finalize_stream(&mut state, &id, stream).await;
+                    }
+                }
+            }
         }
     }
 }
 
-async fn process_sse_events(state: &mut BotState, sse: &mut SseStream) {
-    // Process available SSE events (non-blocking via tokio::select with timeout)
+async fn connect_sse(oc: &OpencodeClient) -> SseStream {
+    match oc.event_subscribe().await {
+        Ok(r) => SseStream::new(r),
+        Err(e) => {
+            eprintln!("Failed to subscribe to SSE: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Reconnect to SSE with exponential backoff (capped at 30s).
+async fn reconnect_sse(oc: &OpencodeClient) -> SseStream {
+    let mut delay = std::time::Duration::from_secs(2);
     loop {
-        let event = tokio::select! {
-            e = sse.next_event() => e,
-            _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => return,
-        };
+        tokio::time::sleep(delay).await;
+        match oc.event_subscribe().await {
+            Ok(r) => {
+                eprintln!("SSE reconnected");
+                return SseStream::new(r);
+            }
+            Err(e) => {
+                eprintln!("SSE reconnect failed: {}", e);
+                delay = (delay * 2).min(std::time::Duration::from_secs(30));
+            }
+        }
+    }
+}
 
-        let event = match event {
-            Some(e) => e,
-            None => return,
-        };
+async fn handle_sse_event(state: &mut BotState, event: SseEvent) {
+    if event.event_type == "message.part.updated" {
+        let props = &event.data;
+        let session_id = props
+            .get("properties")
+            .and_then(|p| p.get("sessionID"))
+            .or_else(|| {
+                props
+                    .get("properties")
+                    .and_then(|p| p.get("part"))
+                    .and_then(|p| p.get("sessionID"))
+            })
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
-        if event.event_type == "message.part.updated" {
-            let props = &event.data;
-            let session_id = props
-                .get("properties")
-                .and_then(|p| p.get("sessionID"))
-                .or_else(|| {
-                    props
-                        .get("properties")
-                        .and_then(|p| p.get("part"))
-                        .and_then(|p| p.get("sessionID"))
-                })
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+        let part = props
+            .get("properties")
+            .and_then(|p| p.get("part"))
+            .cloned()
+            .unwrap_or_default();
 
-            let part = props
-                .get("properties")
-                .and_then(|p| p.get("part"))
-                .cloned()
-                .unwrap_or_default();
+        let part_type = part.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
-            let part_type = part.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-            if let Some(stream) = state.active_streams.get_mut(&session_id) {
-                match part_type {
-                    "reasoning" => {
-                        if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                            stream.phase = Phase::Reasoning;
-                            stream.reasoning = text.to_string();
-                        }
+        if let Some(stream) = state.active_streams.get_mut(&session_id) {
+            match part_type {
+                "reasoning" => {
+                    if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                        stream.phase = Phase::Reasoning;
+                        stream.reasoning = text.to_string();
                     }
-                    "text" => {
-                        if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                            stream.phase = Phase::Text;
-                            stream.text = text.to_string();
-                        }
+                }
+                "text" => {
+                    if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                        stream.phase = Phase::Text;
+                        stream.text = text.to_string();
                     }
-                    "tool" => {
-                        let status = part
+                }
+                "tool" => {
+                    let status = part
+                        .get("state")
+                        .and_then(|s| s.get("status"))
+                        .and_then(|v| v.as_str());
+                    if status == Some("completed") {
+                        let tool_name =
+                            part.get("tool").and_then(|v| v.as_str()).unwrap_or("?");
+                        let title = part
                             .get("state")
-                            .and_then(|s| s.get("status"))
-                            .and_then(|v| v.as_str());
-                        if status == Some("completed") {
-                            let tool_name =
-                                part.get("tool").and_then(|v| v.as_str()).unwrap_or("?");
-                            let title = part
-                                .get("state")
-                                .and_then(|s| s.get("title"))
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("done");
-                            stream
-                                .tool_lines
-                                .push(format!("🔧 {} — {}", tool_name, title));
+                            .and_then(|s| s.get("title"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("done");
+                        stream
+                            .tool_lines
+                            .push(format!("🔧 {} — {}", tool_name, title));
 
-                            let tool_text = stream.tool_lines.join("\n");
-                            let chat_id = stream.chat_id.clone();
+                        let tool_text = stream.tool_lines.join("\n");
+                        let chat_id = stream.chat_id.clone();
 
-                            if let Some(tool_msg_id) = stream.tool_msg_id {
-                                let _ = state
-                                    .tg
-                                    .edit_message_text(&chat_id, tool_msg_id, &tool_text)
-                                    .await;
-                            } else {
-                                let mut opts = SendOpts::default();
-                                if let Some(tid) = stream.thread_id {
-                                    opts.message_thread_id = Some(tid);
-                                }
-                                if let Ok(sent) =
-                                    state.tg.send_message(&chat_id, &tool_text, &opts).await
-                                {
-                                    stream.tool_msg_id = Some(sent.message_id);
-                                }
+                        if let Some(tool_msg_id) = stream.tool_msg_id {
+                            let _ = state
+                                .tg
+                                .edit_message_text(&chat_id, tool_msg_id, &tool_text)
+                                .await;
+                        } else {
+                            let mut opts = SendOpts::default();
+                            if let Some(tid) = stream.thread_id {
+                                opts.message_thread_id = Some(tid);
+                            }
+                            if let Ok(sent) =
+                                state.tg.send_message(&chat_id, &tool_text, &opts).await
+                            {
+                                stream.tool_msg_id = Some(sent.message_id);
                             }
                         }
                     }
-                    _ => {}
                 }
+                _ => {}
+            }
 
-                // Throttled streaming display
-                if (part_type == "reasoning" || part_type == "text") && stream.should_update() {
-                    if let Some(display) = stream.display_text() {
-                        let chat_id = stream.chat_id.clone();
-                        if let Some(stream_msg_id) = stream.stream_msg_id {
-                            let _ = state
-                                .tg
-                                .edit_message_text(&chat_id, stream_msg_id, &display)
-                                .await;
-                        }
-                        stream.mark_updated();
+            // Throttled streaming display
+            if (part_type == "reasoning" || part_type == "text") && stream.should_update() {
+                if let Some(display) = stream.display_text() {
+                    let chat_id = stream.chat_id.clone();
+                    if let Some(stream_msg_id) = stream.stream_msg_id {
+                        let _ = state
+                            .tg
+                            .edit_message_text(&chat_id, stream_msg_id, &display)
+                            .await;
                     }
+                    stream.mark_updated();
                 }
             }
         }
+    }
 
-        if event.event_type == "session.idle" {
-            let session_id = event
-                .data
-                .get("properties")
-                .and_then(|p| p.get("sessionID"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if let Some(stream) = state.active_streams.get_mut(session_id) {
-                if stream.phase != Phase::Done {
-                    stream.phase = Phase::Done;
-                }
-            }
+    if event.event_type == "session.idle" {
+        let session_id = event
+            .data
+            .get("properties")
+            .and_then(|p| p.get("sessionID"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        if let Some(stream) = state.active_streams.remove(&session_id) {
+            finalize_stream(state, &session_id, stream).await;
         }
+    }
+}
+
+/// Send the final response message and clean up after a stream completes.
+async fn finalize_stream(state: &mut BotState, session_id: &str, stream: StreamState) {
+    let chat_id = &stream.chat_id;
+
+    // Delete streaming placeholder and tool message
+    if let Some(mid) = stream.stream_msg_id {
+        let _ = state.tg.delete_message(chat_id, mid).await;
+    }
+    if let Some(mid) = stream.tool_msg_id {
+        let _ = state.tg.delete_message(chat_id, mid).await;
+    }
+
+    // Build final message
+    let mut final_text = String::new();
+    if !stream.reasoning.is_empty() {
+        final_text.push_str(&thinking_to_md2(&stream.reasoning));
+        final_text.push_str("\n\n");
+    }
+    let response_text = if stream.text.is_empty() {
+        "(no response)".to_string()
+    } else {
+        stream.text.clone()
+    };
+    final_text.push_str(&to_markdown_v2(&response_text));
+
+    // Send final message
+    let send_opts = SendOpts {
+        reply_to_message_id: stream.msg_id,
+        message_thread_id: stream.thread_id,
+        parse_mode: Some("MarkdownV2".to_string()),
+        ..Default::default()
+    };
+    let chunks = split_message(&final_text, 4096);
+    for chunk in &chunks {
+        if let Ok(sent) = state.tg.send_message(chat_id, chunk, &send_opts).await {
+            state.msg_sessions.insert(
+                format!("{}:{}", chat_id, sent.message_id),
+                session_id.to_string(),
+            );
+        }
+    }
+
+    // Clear reaction
+    if let Some(msg_id) = stream.msg_id {
+        let _ = state
+            .tg
+            .set_message_reaction(chat_id, msg_id, &[])
+            .await;
     }
 }
 

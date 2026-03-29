@@ -34,7 +34,10 @@ impl SseStream {
             match self.stream.next().await {
                 Some(Ok(chunk)) => {
                     if let Ok(text) = std::str::from_utf8(&chunk) {
-                        self.buffer.push_str(text);
+                        // Normalize line endings (\r\n → \n, bare \r → \n) for
+                        // robust SSE parsing across servers and proxies.
+                        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+                        self.buffer.push_str(&normalized);
                     }
                 }
                 _ => return None,

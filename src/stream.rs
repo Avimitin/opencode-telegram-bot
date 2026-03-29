@@ -5,7 +5,6 @@ pub enum Phase {
     Idle,
     Reasoning,
     Text,
-    Done,
 }
 
 #[allow(dead_code)]
@@ -21,6 +20,7 @@ pub struct StreamState {
     pub text: String,
     pub phase: Phase,
     pub last_stream_update: Instant,
+    pub created_at: Instant,
 }
 
 // Telegram rate limit ~20 edits/min per chat
@@ -47,6 +47,7 @@ impl StreamState {
             text: String::new(),
             phase: Phase::Idle,
             last_stream_update: Instant::now() - std::time::Duration::from_secs(10),
+            created_at: Instant::now(),
         }
     }
 
