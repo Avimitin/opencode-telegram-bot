@@ -199,14 +199,16 @@ async fn handle_message(
 
     // /list_models command
     if cmd_clean.starts_with("/list_models") {
-        let models = state.model_cache.get_models(&state.oc).await;
-        if models.is_empty() {
-            let _ = state
-                .tg
-                .send_message(&chat_id, "Failed to fetch model list.", &reply_opts)
-                .await;
-            return;
-        }
+        let models = match state.model_cache.get_models(&state.oc).await {
+            Ok(m) => m,
+            Err(e) => {
+                let _ = state
+                    .tg
+                    .send_message(&chat_id, &format!("Failed to fetch models: {}", e), &reply_opts)
+                    .await;
+                return;
+            }
+        };
         let lines: Vec<String> = std::iter::once("Available models:\n".to_string())
             .chain(models.iter().map(|m| format!("  {}", m.full_id)))
             .collect();
@@ -219,11 +221,20 @@ async fn handle_message(
 
     // /model command (no args — show picker)
     if cmd_clean.trim() == "/model" {
-        let models = state.model_cache.get_models(&state.oc).await;
+        let models = match state.model_cache.get_models(&state.oc).await {
+            Ok(m) => m,
+            Err(e) => {
+                let _ = state
+                    .tg
+                    .send_message(&chat_id, &format!("Failed to fetch models: {}", e), &reply_opts)
+                    .await;
+                return;
+            }
+        };
         if models.is_empty() {
             let _ = state
                 .tg
-                .send_message(&chat_id, "Failed to fetch model list.", &reply_opts)
+                .send_message(&chat_id, "No models available.", &reply_opts)
                 .await;
             return;
         }
@@ -665,7 +676,10 @@ async fn handle_callback(state: &mut BotState, cb: &CallbackQuery) {
             .await;
     } else if let Some(page_str) = data.strip_prefix("modelpage:") {
         if let Ok(page) = page_str.parse::<usize>() {
-            let models = state.model_cache.get_models(&state.oc).await;
+            let models = match state.model_cache.get_models(&state.oc).await {
+                Ok(m) => m,
+                Err(_) => return,
+            };
             let markup = build_model_keyboard(&models, page);
             let _ = state
                 .tg

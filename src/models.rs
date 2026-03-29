@@ -19,21 +19,14 @@ impl ModelCache {
 
     /// Returns the cached model list, fetching once on first call.
     /// The list is static for the lifetime of the opencode server.
-    pub async fn get_models(&mut self, client: &OpencodeClient) -> Vec<ModelEntry> {
+    pub async fn get_models(&mut self, client: &OpencodeClient) -> anyhow::Result<Vec<ModelEntry>> {
         if let Some(ref models) = self.models {
-            return models.clone();
+            return Ok(models.clone());
         }
 
-        let models = match fetch_models(client).await {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("Failed to fetch models: {}", e);
-                return Vec::new();
-            }
-        };
-
+        let models = fetch_models(client).await?;
         self.models = Some(models.clone());
-        models
+        Ok(models)
     }
 }
 
