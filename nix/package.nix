@@ -1,5 +1,14 @@
 { lib, rustPlatform, openssl, pkg-config, makeWrapper, opencode }:
 
+let
+  # Must match the major version of the opencode API this bot was written against.
+  # See src/opencode.rs header for the full list of endpoints used.
+  expectedMajor = "1";
+  actualMajor = lib.versions.major opencode.version;
+in
+assert lib.assertMsg (actualMajor == expectedMajor)
+  "opencode major version mismatch: expected ${expectedMajor}.x, got ${opencode.version}";
+
 rustPlatform.buildRustPackage {
   pname = "opencode-telegram-bot";
   version = "0.1.0";

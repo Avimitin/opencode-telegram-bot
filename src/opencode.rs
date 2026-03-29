@@ -1,3 +1,22 @@
+// OpenCode REST/SSE client — written against opencode v1.3.0
+//
+// API endpoints used:
+//   POST   /session              — create session
+//   GET    /session              — list sessions
+//   POST   /session/:id/message  — send prompt
+//   GET    /session/:id/message  — list messages (for /stat)
+//   POST   /session/:id/abort    — cancel in-flight request
+//   GET    /provider             — list providers and models
+//   GET    /event                — SSE event stream
+//
+// SSE event types consumed:
+//   message.part.updated  — streaming reasoning/text/tool updates
+//   session.idle          — completion signal
+//   session.error         — model/provider errors (e.g. content filter)
+//
+// Note: opencode puts the event type in the JSON data.type field,
+// NOT in the SSE `event:` header.
+
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
