@@ -1,5 +1,5 @@
 import type { Bot, Context } from "grammy"
-import { loadAccess, gate, stripMention, handlePairing } from "./access.js"
+import { gate, stripMention, handlePairing, getMentionPatterns } from "./access.js"
 import {
   enqueue, trackSession, trackModelOverride,
   getSessionForReply, getLatestSessionForChat, getModelOverride,
@@ -21,6 +21,7 @@ function sanitizeForXml(text: string): string {
 export function registerHandlers(bot: Bot, opencode: any) {
   // Lazy — botInfo is only available after bot.init() / bot.start()
   const getBotInfoId = () => bot.botInfo?.id
+  const getBotUsername = () => bot.botInfo?.username ?? ""
 
   // ── handleMessage ──────────────────────────────────────────────────────
 
@@ -29,7 +30,7 @@ export function registerHandlers(bot: Bot, opencode: any) {
     const senderId = String(ctx.from?.id ?? "")
 
     // Handle bot commands before gate
-    const cmd = stripMention(text).trimStart().replace(/@\S+/, "").trimStart()
+    const cmd = stripMention(text, getBotUsername()).trimStart().replace(/@\S+/, "").trimStart()
 
     if (cmd.match(/^\/list_models(\s|$)/)) {
       const models = await getModelList(opencode)
@@ -56,7 +57,7 @@ export function registerHandlers(bot: Bot, opencode: any) {
     }
 
     // Gate check
-    const gateResult = gate(ctx, getBotInfoId())
+    const gateResult = gate(ctx, getBotInfoId(), getBotUsername())
     if (gateResult === "deny") return
     if (gateResult === "pair") {
       const msg = handlePairing(senderId, chatId)
@@ -74,7 +75,7 @@ export function registerHandlers(bot: Bot, opencode: any) {
     const replyToBot = replyTo?.from?.id === getBotInfoId()
     const msgId = ctx.message?.message_id
 
-    let cleanText = stripMention(text)
+    let cleanText = stripMention(text, getBotUsername())
 
     // Parse /model command
     let modelOverride: string | undefined
@@ -98,8 +99,7 @@ export function registerHandlers(bot: Bot, opencode: any) {
     // Detect @mention → force new session in groups
     const originalText = text
     const isGroup = ctx.chat?.type === "group" || ctx.chat?.type === "supergroup"
-    const access = loadAccess()
-    const patterns = access.mentionPatterns ?? []
+    const patterns = getMentionPatterns(getBotUsername())
     const startsWithMention = patterns.some((p) => originalText.trimStart().startsWith(p))
     const forceNewSession = isGroup && startsWithMention
 

@@ -109,7 +109,18 @@ export function handlePairing(senderId: string, chatId: string): string {
 
 // ── Gate ────────────────────────────────────────────────────────────────────
 
-export function gate(ctx: any, botInfoId: number | undefined): "allow" | "pair" | "deny" {
+export function getMentionPatterns(botUsername: string): string[] {
+  const access = loadAccess()
+  const patterns = [...(access.mentionPatterns ?? [])]
+  // Always include the bot's own @username
+  if (botUsername) {
+    const atUsername = `@${botUsername}`
+    if (!patterns.includes(atUsername)) patterns.push(atUsername)
+  }
+  return patterns
+}
+
+export function gate(ctx: any, botInfoId: number | undefined, botUsername: string): "allow" | "pair" | "deny" {
   const access = loadAccess()
   const senderId = String(ctx.from?.id ?? "")
   const chatId = String(ctx.chat?.id ?? "")
@@ -121,7 +132,7 @@ export function gate(ctx: any, botInfoId: number | undefined): "allow" | "pair" 
 
     if (groupPolicy.requireMention) {
       const text = ctx.message?.text ?? ctx.message?.caption ?? ""
-      const patterns = access.mentionPatterns ?? []
+      const patterns = getMentionPatterns(botUsername)
       const startsWithMention = patterns.some((p: string) => text.trimStart().startsWith(p))
       const replyToBot = ctx.message?.reply_to_message?.from?.id === botInfoId
       if (!startsWithMention && !replyToBot) return "deny"
@@ -142,9 +153,8 @@ export function gate(ctx: any, botInfoId: number | undefined): "allow" | "pair" 
 
 // ── Mention stripping ──────────────────────────────────────────────────────
 
-export function stripMention(text: string): string {
-  const access = loadAccess()
-  const patterns = access.mentionPatterns ?? []
+export function stripMention(text: string, botUsername: string): string {
+  const patterns = getMentionPatterns(botUsername)
   for (const p of patterns) {
     if (text.trimStart().startsWith(p)) {
       return text.trimStart().slice(p.length).trimStart()
