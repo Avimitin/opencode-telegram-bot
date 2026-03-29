@@ -141,7 +141,11 @@ async fn handle_message(
                 .send_message(
                     &chat_id,
                     "Reply to a bot message with /stat to see session stats.",
-                    &SendOpts::default(),
+                    &SendOpts {
+                        reply_to_message_id: Some(msg.message_id),
+                        message_thread_id: msg.message_thread_id,
+                        ..Default::default()
+                    },
                 )
                 .await;
             return;
