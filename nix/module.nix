@@ -10,19 +10,10 @@ in
   options.services.opencode-telegram = {
     enable = lib.mkEnableOption "OpenCode Telegram bot";
 
-    opencodePackage = lib.mkOption {
+    package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.opencode;
-      description = "The opencode package providing the `opencode` binary.";
-    };
-
-    botPackage = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
-      default = null;
-      description = ''
-        Path to the opencode-telegram-bot source directory.
-        If null, uses the source from this flake.
-      '';
+      default = pkgs.callPackage ./package.nix {};
+      description = "The opencode-telegram-bot package.";
     };
 
     user = lib.mkOption {
@@ -105,13 +96,12 @@ in
       wants = [ "network-online.target" ];
       wantedBy = [ "multi-user.target" ];
 
-      path = [ cfg.opencodePackage pkgs.bun ];
-
       serviceConfig = {
         Type = "simple";
         User = cfg.user;
         Group = cfg.group;
         WorkingDirectory = cfg.stateDir;
+        ExecStart = "${cfg.package}/bin/opencode-telegram-bot";
         Restart = "on-failure";
         RestartSec = 10;
 
@@ -139,10 +129,6 @@ in
         HOME = cfg.stateDir;
         TELEGRAM_STATE_DIR = "${cfg.stateDir}/.opencode/channels/telegram";
       } // cfg.extraEnvironment;
-
-      script = ''
-        exec bun run ${cfg.botPackage or ./.}/src/index.ts
-      '';
     };
   };
 }

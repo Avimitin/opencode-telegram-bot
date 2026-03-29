@@ -14,6 +14,14 @@
       nixosModules.default = import ./nix/module.nix;
       nixosModules.opencode-telegram = import ./nix/module.nix;
 
+      packages = forAllSystems (system:
+        let pkgs = nixpkgs.legacyPackages.${system};
+        in {
+          default = pkgs.callPackage ./nix/package.nix {};
+          opencode-telegram-bot = pkgs.callPackage ./nix/package.nix {};
+        }
+      );
+
       devShells = forAllSystems (system:
         let pkgs = nixpkgs.legacyPackages.${system};
         in {
