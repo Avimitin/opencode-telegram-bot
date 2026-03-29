@@ -24,39 +24,20 @@ use serde_json::json;
 use std::collections::HashMap;
 
 #[tokio::main]
-async fn main() {
-    // Load config
-    let config = match Config::load() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{}", e);
-            std::process::exit(1);
-        }
-    };
+async fn main() -> anyhow::Result<()> {
+    let config = Config::load()?;
 
-    // Start opencode server
     println!("Starting opencode server...");
-    let server = match OpencodeServer::spawn(&config.opencode_config).await {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("Failed to start opencode: {}", e);
-            std::process::exit(1);
-        }
-    };
+    let server = OpencodeServer::spawn(&config.opencode_config)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
     println!("Opencode server ready: {}", server.url);
 
     let oc = OpencodeClient::new(&server.url);
 
-    // Create Telegram bot
     let tg = TelegramClient::new(&config.bot_token);
 
-    let me = match tg.get_me().await {
-        Ok(u) => u,
-        Err(e) => {
-            eprintln!("Failed to get bot info: {}", e);
-            std::process::exit(1);
-        }
-    };
+    let me = tg.get_me().await.map_err(|e| anyhow::anyhow!(e))?;
     let bot_username = me.username.clone().unwrap_or_default();
     println!("Bot username: @{}", bot_username);
 
