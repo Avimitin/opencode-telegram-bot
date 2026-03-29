@@ -2,4 +2,5 @@
 /result
 CLAUDE.local.md
 *.local.md
-.claude/
+.claude/*
+!.claude/feedback_*.md
