@@ -1,4 +1,5 @@
 /target
+/result
 CLAUDE.local.md
 *.local.md
 .claude/
