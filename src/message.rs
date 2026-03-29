@@ -126,6 +126,50 @@ async fn handle_message(
     };
     let cmd_clean = cmd_clean.trim_start();
 
+    // /stat command — must reply to a bot message to identify the session
+    if cmd_clean.starts_with("/stat") {
+        let reply_to_bot = msg
+            .reply_to_message
+            .as_ref()
+            .and_then(|r| r.from.as_ref())
+            .map(|u| u.id == state.bot_id)
+            .unwrap_or(false);
+
+        if !reply_to_bot {
+            let _ = state
+                .tg
+                .send_message(
+                    &chat_id,
+                    "Reply to a bot message with /stat to see session stats.",
+                    &SendOpts::default(),
+                )
+                .await;
+            return;
+        }
+
+        let session_id = msg
+            .reply_to_message
+            .as_ref()
+            .and_then(|r| {
+                let key = format!("{}:{}", chat_id, r.message_id);
+                state.msg_sessions.get(&key).cloned()
+            });
+
+        if let Some(sid) = session_id {
+            handle_stat(state, &chat_id, &sid).await;
+        } else {
+            let _ = state
+                .tg
+                .send_message(
+                    &chat_id,
+                    "Could not find session for this message.",
+                    &SendOpts::default(),
+                )
+                .await;
+        }
+        return;
+    }
+
     // /list_models command
     if cmd_clean.starts_with("/list_models") {
         let models = state.model_cache.get_models(&state.oc).await;
@@ -486,6 +530,83 @@ pub async fn dispatch_prompt(
             eprintln!("Prompt error: {}", e);
         }
     });
+}
+
+async fn handle_stat(state: &mut BotState, chat_id: &str, session_id: &str) {
+    let messages = match state.oc.session_messages(session_id).await {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = state
+                .tg
+                .send_message(chat_id, &format!("Failed to fetch stats: {}", e), &SendOpts::default())
+                .await;
+            return;
+        }
+    };
+
+    let mut total_input: i64 = 0;
+    let mut total_output: i64 = 0;
+    let mut total_reasoning: i64 = 0;
+    let mut total_cache_read: i64 = 0;
+    let mut model_id = String::new();
+    let mut provider_id = String::new();
+    let mut msg_count: usize = 0;
+
+    for msg in &messages {
+        let info = match msg.get("info") {
+            Some(i) => i,
+            None => continue,
+        };
+        let role = info.get("role").and_then(|v| v.as_str()).unwrap_or("");
+
+        if role == "user" && model_id.is_empty() {
+            if let Some(model) = info.get("model") {
+                provider_id = model.get("providerID").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                model_id = model.get("modelID").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            }
+        }
+
+        if role == "assistant" {
+            if let Some(tokens) = info.get("tokens") {
+                total_input += tokens.get("input").and_then(|v| v.as_i64()).unwrap_or(0);
+                total_output += tokens.get("output").and_then(|v| v.as_i64()).unwrap_or(0);
+                total_reasoning += tokens.get("reasoning").and_then(|v| v.as_i64()).unwrap_or(0);
+                total_cache_read += tokens.get("cache")
+                    .and_then(|c| c.get("read"))
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+            }
+            msg_count += 1;
+        }
+    }
+
+    let total_tokens = total_input + total_output + total_reasoning;
+    let stat_text = format!(
+        "Session: {}\n\
+         Model: {}/{}\n\
+         Turns: {}\n\
+         \n\
+         Tokens:\n\
+         ├ Input: {}\n\
+         ├ Output: {}\n\
+         ├ Reasoning: {}\n\
+         ├ Cache read: {}\n\
+         └ Total: {}",
+        &session_id[..session_id.len().min(20)],
+        provider_id,
+        model_id,
+        msg_count,
+        total_input,
+        total_output,
+        total_reasoning,
+        total_cache_read,
+        total_tokens,
+    );
+
+    let _ = state
+        .tg
+        .send_message(chat_id, &stat_text, &SendOpts::default())
+        .await;
 }
 
 async fn handle_callback(state: &mut BotState, cb: &CallbackQuery) {

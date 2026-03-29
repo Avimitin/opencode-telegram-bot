@@ -207,6 +207,21 @@ impl OpencodeClient {
             .map_err(|e| format!("provider.list parse: {}", e))
     }
 
+    pub async fn session_messages(&self, session_id: &str) -> Result<Vec<Value>, String> {
+        let resp = self
+            .client
+            .get(format!("{}/session/{}/message", self.base_url, session_id))
+            .send()
+            .await
+            .map_err(|e| format!("session.messages: {}", e))?;
+        if !resp.status().is_success() {
+            return Err(format!("session.messages: HTTP {}", resp.status()));
+        }
+        resp.json()
+            .await
+            .map_err(|e| format!("session.messages parse: {}", e))
+    }
+
     pub async fn session_abort(&self, session_id: &str) -> Result<(), String> {
         let resp = self
             .client

@@ -65,6 +65,7 @@ async fn main() {
         .set_my_commands(&[
             json!({"command": "list_models", "description": "List available models"}),
             json!({"command": "model", "description": "Set model: /model provider/model"}),
+            json!({"command": "stat", "description": "Session stats (reply to a bot message)"}),
         ])
         .await;
 
