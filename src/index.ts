@@ -326,8 +326,28 @@ function findChatForSession(sessionId: string): string | undefined {
   }
 })()
 
+// ── File download helper ─────────────────────────────────────────────────────
+
+type AttachedFile = { mime: string; filename: string; dataUrl: string }
+
+async function downloadTelegramFile(fileId: string, mime: string, filename: string): Promise<AttachedFile | undefined> {
+  try {
+    const file = await bot.api.getFile(fileId)
+    if (!file.file_path) return undefined
+    const url = `https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`
+    const res = await fetch(url)
+    if (!res.ok) return undefined
+    const buf = Buffer.from(await res.arrayBuffer())
+    const dataUrl = `data:${mime};base64,${buf.toString("base64")}`
+    return { mime, filename, dataUrl }
+  } catch (e) {
+    console.error("File download error:", e)
+    return undefined
+  }
+}
+
 // Handle messages
-async function handleMessage(ctx: Context, text: string) {
+async function handleMessage(ctx: Context, text: string, files: AttachedFile[] = []) {
   const gateResult = gate(ctx)
   const chatId = String(ctx.chat?.id ?? "")
   const senderId = String(ctx.from?.id ?? "")
@@ -341,10 +361,10 @@ async function handleMessage(ctx: Context, text: string) {
   }
 
   // Queue the actual processing per chat to avoid concurrent prompts
-  enqueue(chatId, () => processMessage(ctx, text, chatId, senderId))
+  enqueue(chatId, () => processMessage(ctx, text, chatId, senderId, files))
 }
 
-async function processMessage(ctx: Context, text: string, chatId: string, senderId: string) {
+async function processMessage(ctx: Context, text: string, chatId: string, senderId: string, files: AttachedFile[] = []) {
   const replyTo = ctx.message?.reply_to_message
   const replyToBot = replyTo?.from?.id === bot.botInfo?.id
   const msgId = ctx.message?.message_id
@@ -436,10 +456,16 @@ async function processMessage(ctx: Context, text: string, chatId: string, sender
     })
   })
 
+  // Build prompt parts: text + any attached files
+  const promptParts: any[] = [{ type: "text", text: prompt }]
+  for (const file of files) {
+    promptParts.push({ type: "file", mime: file.mime, url: file.dataUrl, filename: file.filename })
+  }
+
   // Fire prompt in background — SSE events drive streaming
   opencode.client.session.prompt({
     sessionID: sessionId!,
-    parts: [{ type: "text", text: prompt }],
+    parts: promptParts,
   }).then((result) => {
     if (result.error) {
       console.error("Prompt error:", JSON.stringify(result.error))
@@ -635,8 +661,26 @@ function splitMessage(text: string, limit: number): string[] {
 
 // Register handlers
 bot.on("message:text", (ctx) => handleMessage(ctx, ctx.message.text))
-bot.on("message:photo", (ctx) => handleMessage(ctx, ctx.message.caption ?? "(photo)"))
-bot.on("message:document", (ctx) => handleMessage(ctx, ctx.message.caption ?? `(document: ${ctx.message.document.file_name ?? "file"})`))
+bot.on("message:photo", async (ctx) => {
+  // Get the largest photo (last in array)
+  const photos = ctx.message.photo
+  const largest = photos[photos.length - 1]!
+  const file = await downloadTelegramFile(largest.file_id, "image/jpeg", "photo.jpg")
+  const files = file ? [file] : []
+  return handleMessage(ctx, ctx.message.caption || "(photo)", files)
+})
+bot.on("message:document", async (ctx) => {
+  const doc = ctx.message.document
+  const mime = doc.mime_type ?? "application/octet-stream"
+  const filename = doc.file_name ?? "file"
+  const files: AttachedFile[] = []
+  // Download images sent as documents
+  if (mime.startsWith("image/")) {
+    const file = await downloadTelegramFile(doc.file_id, mime, filename)
+    if (file) files.push(file)
+  }
+  return handleMessage(ctx, ctx.message.caption || `(document: ${filename})`, files)
+})
 bot.on("message:voice", (ctx) => handleMessage(ctx, ctx.message.caption ?? "(voice message)"))
 bot.on("message:video", (ctx) => handleMessage(ctx, ctx.message.caption ?? "(video)"))
 bot.on("message:sticker", (ctx) => {
