@@ -1,6 +1,7 @@
 // OpenCode REST/SSE client — written against opencode v1.3.0
 //
 // API endpoints used:
+//   GET    /global/health        — readiness check on startup
 //   POST   /session              — create session
 //   GET    /session              — list sessions
 //   POST   /session/:id/message  — send prompt
@@ -21,8 +22,12 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
+
+fn find_free_port() -> std::io::Result<u16> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    Ok(listener.local_addr()?.port())
+}
 
 pub struct OpencodeServer {
     pub url: String,
@@ -30,45 +35,36 @@ pub struct OpencodeServer {
 }
 
 impl OpencodeServer {
-    /// Spawn `opencode serve` and wait for it to be listening.
+    /// Spawn `opencode serve` and poll the health endpoint until ready.
     pub async fn spawn(config: &Value) -> Result<Self, String> {
-        let mut cmd = Command::new("opencode");
-        cmd.args(["serve", "--hostname=127.0.0.1", "--port=0"])
-            .env("OPENCODE_CONFIG_CONTENT", config.to_string())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        let port = find_free_port().map_err(|e| format!("Failed to find free port: {}", e))?;
+        let url = format!("http://127.0.0.1:{}", port);
 
-        let mut child = cmd.spawn().map_err(|e| {
+        let mut cmd = Command::new("opencode");
+        cmd.args(["serve", "--hostname=127.0.0.1", &format!("--port={}", port)])
+            .env("OPENCODE_CONFIG_CONTENT", config.to_string())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        let child = cmd.spawn().map_err(|e| {
             format!("Failed to spawn opencode serve: {}. Is 'opencode' in PATH?", e)
         })?;
 
-        let stdout = child.stdout.take().ok_or("No stdout from opencode")?;
-        let mut reader = BufReader::new(stdout).lines();
-
-        // Wait for the "opencode server listening on http://..." line
-        let url = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-            let mut output = String::new();
-            while let Ok(Some(line)) = reader.next_line().await {
-                output.push_str(&line);
-                output.push('\n');
-                if line.contains("opencode server listening")
-                    && let Some(start) = line.find("http") {
-                        let url = line[start..].trim().to_string();
-                        return Ok(url);
-                    }
+        // Poll health endpoint until server is ready
+        let client = Client::new();
+        let health_url = format!("{}/global/health", url);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                return Err("Timeout waiting for opencode serve to start".to_string());
             }
-            Err(format!(
-                "opencode exited without printing listen URL. Output: {}",
-                output
-            ))
-        })
-        .await
-        .map_err(|_| "Timeout waiting for opencode serve to start".to_string())??;
-
-        // Spawn a task to drain remaining stdout so the pipe doesn't block
-        tokio::spawn(async move {
-            while let Ok(Some(_)) = reader.next_line().await {}
-        });
+            if let Ok(resp) = client.get(&health_url).send().await {
+                if resp.status().is_success() {
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
 
         Ok(OpencodeServer { url, child })
     }
