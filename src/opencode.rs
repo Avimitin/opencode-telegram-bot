@@ -18,6 +18,7 @@
 // Note: opencode puts the event type in the JSON data.type field,
 // NOT in the SSE `event:` header.
 
+use anyhow::Context;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -36,8 +37,8 @@ pub struct OpencodeServer {
 
 impl OpencodeServer {
     /// Spawn `opencode serve` and poll the health endpoint until ready.
-    pub async fn spawn(config: &Value) -> Result<Self, String> {
-        let port = find_free_port().map_err(|e| format!("Failed to find free port: {}", e))?;
+    pub async fn spawn(config: &Value) -> anyhow::Result<Self> {
+        let port = find_free_port().context("find free port")?;
         let url = format!("http://127.0.0.1:{}", port);
 
         let mut cmd = Command::new("opencode");
@@ -46,17 +47,15 @@ impl OpencodeServer {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
 
-        let child = cmd.spawn().map_err(|e| {
-            format!("Failed to spawn opencode serve: {}. Is 'opencode' in PATH?", e)
-        })?;
+        let child = cmd.spawn().context("spawn opencode serve — is 'opencode' in PATH?")?;
 
         // Poll health endpoint until server is ready
-        let client = Client::builder().no_proxy().build().unwrap();
+        let client = Client::builder().no_proxy().build()?;
         let health_url = format!("{}/global/health", url);
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
             if tokio::time::Instant::now() >= deadline {
-                return Err("Timeout waiting for opencode serve to start".to_string());
+                anyhow::bail!("timeout waiting for opencode serve to start");
             }
             if let Ok(resp) = client.get(&health_url).send().await {
                 if resp.status().is_success() {
@@ -163,21 +162,17 @@ impl OpencodeClient {
         }
     }
 
-    pub async fn session_create(&self, title: &str) -> Result<Session, String> {
+    pub async fn session_create(&self, title: &str) -> anyhow::Result<Session> {
         let resp = self
             .client
             .post(format!("{}/session", self.base_url))
             .json(&json!({ "title": title }))
             .send()
             .await
-            .map_err(|e| format!("session.create: {}", e))?;
-
-        if !resp.status().is_success() {
-            return Err(format!("session.create: HTTP {}", resp.status()));
-        }
-        resp.json()
-            .await
-            .map_err(|e| format!("session.create parse: {}", e))
+            .context("session.create")?
+            .error_for_status()
+            .context("session.create")?;
+        resp.json().await.context("session.create parse")
     }
 
     pub async fn session_prompt(
@@ -185,7 +180,7 @@ impl OpencodeClient {
         session_id: &str,
         parts: Vec<PromptPart>,
         model: Option<ModelRef>,
-    ) -> Result<(), String> {
+    ) -> anyhow::Result<()> {
         let mut body = json!({
             "sessionID": session_id,
             "parts": parts,
@@ -193,87 +188,70 @@ impl OpencodeClient {
         if let Some(m) = model {
             body["model"] = json!({ "providerID": m.provider_id, "modelID": m.model_id });
         }
-        let resp = self
-            .client
+        self.client
             .post(format!("{}/session/{}/message", self.base_url, session_id))
             .json(&body)
             .send()
             .await
-            .map_err(|e| format!("session.prompt: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(format!("session.prompt: HTTP {} — {}", status, body));
-        }
+            .context("session.prompt")?
+            .error_for_status()
+            .context("session.prompt")?;
         Ok(())
     }
 
-    pub async fn provider_list(&self) -> Result<ProviderListResponse, String> {
+    pub async fn provider_list(&self) -> anyhow::Result<ProviderListResponse> {
         let resp = self
             .client
             .get(format!("{}/provider", self.base_url))
             .send()
             .await
-            .map_err(|e| format!("provider.list: {}", e))?;
-
-        if !resp.status().is_success() {
-            return Err(format!("provider.list: HTTP {}", resp.status()));
-        }
-        resp.json()
-            .await
-            .map_err(|e| format!("provider.list parse: {}", e))
+            .context("provider.list")?
+            .error_for_status()
+            .context("provider.list")?;
+        resp.json().await.context("provider.list parse")
     }
 
-    pub async fn session_list(&self) -> Result<Vec<Session>, String> {
+    pub async fn session_list(&self) -> anyhow::Result<Vec<Session>> {
         let resp = self
             .client
             .get(format!("{}/session", self.base_url))
             .send()
             .await
-            .map_err(|e| format!("session.list: {}", e))?;
-        if !resp.status().is_success() {
-            return Err(format!("session.list: HTTP {}", resp.status()));
-        }
-        resp.json()
-            .await
-            .map_err(|e| format!("session.list parse: {}", e))
+            .context("session.list")?
+            .error_for_status()
+            .context("session.list")?;
+        resp.json().await.context("session.list parse")
     }
 
-    pub async fn session_messages(&self, session_id: &str) -> Result<Vec<Value>, String> {
+    pub async fn session_messages(&self, session_id: &str) -> anyhow::Result<Vec<Value>> {
         let resp = self
             .client
             .get(format!("{}/session/{}/message", self.base_url, session_id))
             .send()
             .await
-            .map_err(|e| format!("session.messages: {}", e))?;
-        if !resp.status().is_success() {
-            return Err(format!("session.messages: HTTP {}", resp.status()));
-        }
-        resp.json()
-            .await
-            .map_err(|e| format!("session.messages parse: {}", e))
+            .context("session.messages")?
+            .error_for_status()
+            .context("session.messages")?;
+        resp.json().await.context("session.messages parse")
     }
 
-    pub async fn session_abort(&self, session_id: &str) -> Result<(), String> {
-        let resp = self
-            .client
+    pub async fn session_abort(&self, session_id: &str) -> anyhow::Result<()> {
+        self.client
             .post(format!("{}/session/{}/abort", self.base_url, session_id))
             .send()
             .await
-            .map_err(|e| format!("session.abort: {}", e))?;
-        if !resp.status().is_success() {
-            return Err(format!("session.abort: HTTP {}", resp.status()));
-        }
+            .context("session.abort")?
+            .error_for_status()
+            .context("session.abort")?;
         Ok(())
     }
 
     /// Subscribe to SSE events. Returns the raw response for streaming.
-    pub async fn event_subscribe(&self) -> Result<reqwest::Response, String> {
+    pub async fn event_subscribe(&self) -> anyhow::Result<reqwest::Response> {
         self.client
             .get(format!("{}/event", self.base_url))
             .send()
             .await
-            .map_err(|e| format!("event.subscribe: {}", e))
+            .context("event.subscribe")
     }
 }

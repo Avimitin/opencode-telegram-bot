@@ -43,7 +43,7 @@ impl ModelCache {
     }
 }
 
-async fn fetch_models(client: &OpencodeClient) -> Result<Vec<ModelEntry>, String> {
+async fn fetch_models(client: &OpencodeClient) -> anyhow::Result<Vec<ModelEntry>> {
     let result = client.provider_list().await?;
     let mut models = Vec::new();
 
