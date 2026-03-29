@@ -23,7 +23,7 @@ use crate::telegram::{SendOpts, TelegramClient};
 use serde_json::json;
 use std::collections::HashMap;
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() {
     // Load config
     let config = match Config::load() {
