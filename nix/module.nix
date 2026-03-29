@@ -92,10 +92,7 @@ in
       (dir: "d ${dir} 0700 ${cfg.user} ${cfg.group} -")
       [
         cfg.stateDir
-        "${cfg.stateDir}/.opencode"
-        "${cfg.stateDir}/.opencode/channels"
-        "${cfg.stateDir}/.opencode/channels/telegram"
-        "${cfg.stateDir}/.opencode/channels/telegram/approved"
+        "${cfg.stateDir}/approved"
       ];
 
     systemd.services.opencode-telegram = {
@@ -152,12 +149,13 @@ in
 
       preStart = ''
         cp ${opencodeConfigFile} ${cfg.stateDir}/opencode.json
-        cp ${accessConfigFile} ${cfg.stateDir}/.opencode/channels/telegram/access.json
+        cp ${accessConfigFile} ${cfg.stateDir}/access.json
       '';
 
       environment = {
         HOME = cfg.stateDir;
-        TELEGRAM_STATE_DIR = "${cfg.stateDir}/.opencode/channels/telegram";
+        TELEGRAM_STATE_DIR = cfg.stateDir;
+        OPENCODE_CONFIG_PATH = "${cfg.stateDir}/opencode.json";
         # The bot talks to a local opencode server over HTTP.
         # Proxy variables must not intercept localhost traffic.
         no_proxy = "127.0.0.1,localhost";
