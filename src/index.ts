@@ -475,15 +475,15 @@ async function processMessage(ctx: Context, text: string, chatId: string, sender
     await bot.api.deleteMessage(chatId, stream.toolMsgId).catch(() => {})
   }
 
-  // Build final message with expandable blockquote for thinking
+  // Build final message in MarkdownV2
   let finalText = ""
   if (stream.reasoning) {
-    finalText += `<blockquote expandable>💭 ${escapeHtml(stream.reasoning)}</blockquote>\n\n`
+    finalText += thinkingToMd2(stream.reasoning) + "\n\n"
   }
-  finalText += escapeHtml(stream.text || "(no response)")
+  finalText += toMarkdownV2(stream.text || "(no response)")
 
   // Send final message
-  const sendOpts: any = { reply_to_message_id: msgId, parse_mode: "HTML" }
+  const sendOpts: any = { reply_to_message_id: msgId, parse_mode: "MarkdownV2" }
   if (stream.threadId) sendOpts.message_thread_id = stream.threadId
   const chunks = splitMessage(finalText, 4096)
   for (const chunk of chunks) {
@@ -497,6 +497,115 @@ async function processMessage(ctx: Context, text: string, chatId: string, sender
   if (msgId) {
     await bot.api.setMessageReaction(chatId, msgId, []).catch(() => {})
   }
+}
+
+// ── MarkdownV2 formatting ───────────────────────────────────────────────────
+
+const MD2_SPECIAL = /([_*\[\]()~`>#+\-=|{}.!\\])/g
+
+function escapeMd2(text: string): string {
+  return text.replace(MD2_SPECIAL, "\\$1")
+}
+
+// Convert LLM markdown output to Telegram MarkdownV2
+function toMarkdownV2(text: string): string {
+  const segments: string[] = []
+  let pos = 0
+
+  // Regex to match code blocks and inline code
+  const codeBlockRe = /```(\w*)\n([\s\S]*?)```/g
+  const inlineCodeRe = /`([^`\n]+)`/g
+
+  // First pass: extract code blocks, convert remaining text
+  // We process the text by splitting around code blocks
+  const parts: { type: "text" | "codeblock" | "inline"; content: string; lang?: string }[] = []
+
+  // Find all code blocks first
+  const blocks: { start: number; end: number; lang: string; code: string }[] = []
+  let m: RegExpExecArray | null
+  while ((m = codeBlockRe.exec(text)) !== null) {
+    blocks.push({ start: m.index, end: m.index + m[0].length, lang: m[1]!, code: m[2]! })
+  }
+
+  // Build parts array
+  let lastEnd = 0
+  for (const block of blocks) {
+    if (block.start > lastEnd) {
+      parts.push({ type: "text", content: text.slice(lastEnd, block.start) })
+    }
+    parts.push({ type: "codeblock", content: block.code, lang: block.lang })
+    lastEnd = block.end
+  }
+  if (lastEnd < text.length) {
+    parts.push({ type: "text", content: text.slice(lastEnd) })
+  }
+
+  // Process each part
+  for (const part of parts) {
+    if (part.type === "codeblock") {
+      // Code blocks: only escape ` and \ inside
+      const escaped = part.content.replace(/\\/g, "\\\\").replace(/`/g, "\\`")
+      segments.push(`\`\`\`${part.lang ?? ""}\n${escaped}\`\`\``)
+    } else {
+      // Process text: handle inline code, bold, italic, links, then escape the rest
+      let t = part.content
+
+      // Temporarily replace inline code
+      const inlineCodes: string[] = []
+      t = t.replace(inlineCodeRe, (_, code) => {
+        const idx = inlineCodes.length
+        const escaped = code.replace(/\\/g, "\\\\").replace(/`/g, "\\`")
+        inlineCodes.push("`" + escaped + "`")
+        return `\x00IC${idx}\x00`
+      })
+
+      // Temporarily replace links [text](url)
+      const links: string[] = []
+      t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, linkText, url) => {
+        const idx = links.length
+        links.push(`[${escapeMd2(linkText)}](${url.replace(/[)\\]/g, "\\$&")})`)
+        return `\x00LK${idx}\x00`
+      })
+
+      // Convert **bold** → *bold* (Telegram uses single *)
+      t = t.replace(/\*\*(.+?)\*\*/g, (_, inner) => `\x00BS\x00${inner}\x00BE\x00`)
+
+      // Convert _italic_ or *italic* (single) → _italic_
+      // Only single * that aren't part of ** (already handled)
+      t = t.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, (_, inner) => `\x00IS\x00${inner}\x00IE\x00`)
+
+      // Escape remaining special chars
+      t = escapeMd2(t)
+
+      // Restore bold markers
+      t = t.replace(/\x00BS\x00/g, "*").replace(/\x00BE\x00/g, "*")
+      // Restore italic markers
+      t = t.replace(/\x00IS\x00/g, "_").replace(/\x00IE\x00/g, "_")
+
+      // Restore inline codes
+      t = t.replace(/\x00IC(\d+)\x00/g, (_, idx) => inlineCodes[Number(idx)]!)
+      // Restore links
+      t = t.replace(/\x00LK(\d+)\x00/g, (_, idx) => links[Number(idx)]!)
+
+      segments.push(t)
+    }
+  }
+
+  return segments.join("")
+}
+
+// Format thinking as MarkdownV2 expandable blockquote (plain text, no markdown)
+function thinkingToMd2(text: string): string {
+  const escaped = escapeMd2(text)
+  const lines = escaped.split("\n")
+  if (lines.length === 0) return ""
+  // First line: >💭 ..., middle lines: >..., last line ends with ||
+  const result = lines.map((l, i) => {
+    const prefix = i === 0 ? ">💭 " : ">"
+    const suffix = i === lines.length - 1 ? "||" : ""
+    return `${prefix}${l}${suffix}`
+  })
+  return result.join("\n")
 }
 
 function escapeHtml(text: string): string {
