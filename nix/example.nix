@@ -10,7 +10,7 @@
 
     settings = {
       model = "zai-coding-plan/glm-4.7";
-      permission = { "*" = "auto"; };
+      permission = { "*" = "allow"; };
     };
 
     accessConfig = {

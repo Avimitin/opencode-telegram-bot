@@ -1,5 +1,5 @@
 import { Bot, type Context } from "grammy"
-import { createOpencode, type ToolPart } from "@opencode-ai/sdk"
+import { createOpencode } from "@opencode-ai/sdk/v2"
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync } from "fs"
 import { join } from "path"
 import { homedir } from "os"
@@ -149,14 +149,13 @@ function gate(ctx: Context): "allow" | "pair" | "deny" {
     const groupPolicy = access.groups[chatId]
     if (!groupPolicy) return "deny"
 
-    // Check mention requirement
+    // Check mention requirement: @botname must be at start of message, or reply to bot
     if (groupPolicy.requireMention) {
       const text = ctx.message?.text ?? ctx.message?.caption ?? ""
       const patterns = access.mentionPatterns ?? []
-      const mentioned = patterns.some((p) => text.includes(p))
-      // Also allow replies to the bot's own messages
+      const startsWithMention = patterns.some((p) => text.trimStart().startsWith(p))
       const replyToBot = ctx.message?.reply_to_message?.from?.id === bot.botInfo?.id
-      if (!mentioned && !replyToBot) return "deny"
+      if (!startsWithMention && !replyToBot) return "deny"
     }
 
     // Check group allowFrom
@@ -243,18 +242,12 @@ function findChatForSession(sessionId: string): string | undefined {
 // Subscribe to opencode events for streaming + tool updates
 ;(async () => {
   const events = await opencode.client.event.subscribe()
+  console.log("SSE subscriber connected")
   for await (const event of events.stream) {
-    // Debug: log events
-    if (activeStreams.size > 0 && (event.type === "message.part.updated" || event.type === "message.updated")) {
-      const sid = (event.properties as any).sessionID ?? (event.properties as any).part?.sessionID
-      const hasStream = activeStreams.has(sid)
-      console.log("SSE:", event.type, "session:", sid, "hasStream:", hasStream, "activeKeys:", [...activeStreams.keys()].join(","))
-    }
-
-    // Handle part updates — used for both streaming and phase detection
     if (event.type === "message.part.updated") {
-      const part = (event.properties as any).part
-      const sessionID = part?.sessionID ?? (event.properties as any).sessionID
+      const props = event.properties as any
+      const part = props.part
+      const sessionID: string = props.sessionID ?? part?.sessionID
       const stream = activeStreams.get(sessionID)
 
       if (stream) {
@@ -264,8 +257,8 @@ function findChatForSession(sessionId: string): string | undefined {
         } else if (part.type === "text" && part.text) {
           stream.phase = "text"
           stream.text = part.text
-        } else if (part.type === "tool" && part.state?.status === "completed") {
-          const toolMsg = `🔧 ${part.tool} — ${part.state.title ?? "done"}`
+        } else if (part.type === "tool" && part.state.status === "completed") {
+          const toolMsg = `🔧 ${part.tool} — ${(part.state as any).title ?? "done"}`
           await bot.api.sendMessage(Number(stream.chatId), toolMsg).catch(() => {})
         }
 
@@ -278,7 +271,6 @@ function findChatForSession(sessionId: string): string | undefined {
             : stream.text
           if (display) {
             const truncated = display.length > 3900 ? "..." + display.slice(-3900) : display
-            console.log("Sending draft:", stream.phase, "len:", truncated.length, "chatId:", stream.chatId)
             await bot.api.sendMessageDraft(
               Number(stream.chatId), stream.draftId, truncated
             ).catch((e: any) => console.error("Draft error:", e?.message ?? e))
@@ -287,21 +279,21 @@ function findChatForSession(sessionId: string): string | undefined {
       }
 
       // Tool updates for sessions without active stream
-      if (!stream && part.type === "tool" && part.state?.status === "completed") {
+      if (!stream && part.type === "tool" && part.state.status === "completed") {
         const chatId = findChatForSession(sessionID)
         if (chatId) {
-          const toolMsg = `🔧 ${part.tool} — ${part.state.title ?? "done"}`
+          const toolMsg = `🔧 ${part.tool} — ${(part.state as any).title ?? "done"}`
           await bot.api.sendMessage(Number(chatId), toolMsg).catch(() => {})
         }
       }
     }
 
-    // Handle message completion
-    if (event.type === "message.updated") {
-      const msg = (event.properties as any)
-      const sessionID = msg.sessionID
+    // Handle session idle — means the prompt is fully done
+    if (event.type === "session.idle") {
+      const props = event.properties as any
+      const sessionID: string = props.sessionID
       const stream = activeStreams.get(sessionID)
-      if (stream && msg.role === "assistant") {
+      if (stream && stream.phase !== "done") {
         stream.phase = "done"
         stream.resolve()
       }
@@ -337,21 +329,30 @@ async function processMessage(ctx: Context, text: string, chatId: string, sender
     await bot.api.setMessageReaction(chatId, msgId, [{ type: "emoji", emoji: "👀" }]).catch(() => {})
   }
 
-  // Determine session: reply to bot = continue, otherwise = new session
+  // Determine session strategy:
+  // - Reply to bot message → continue that session
+  // - DM (not reply) → continue latest session for this chat
+  // - Group: @botname at start of message → new session
+  // - Group: reply to bot or mention elsewhere → continue latest session
   let sessionId: string | undefined
-  if (replyToBot && replyTo) {
-    const key = `${chatId}:${replyTo.message_id}`
-    sessionId = msgSessions.get(key)
-  }
+  const isGroup = ctx.chat?.type === "group" || ctx.chat?.type === "supergroup"
+  const access = loadAccess()
+  const patterns = access.mentionPatterns ?? []
+  const startsWithMention = patterns.some((p) => text.trimStart().startsWith(p))
+  const forceNewSession = isGroup && startsWithMention
 
-  // For DMs: also try continuing the last session for this chat if not a reply
-  // (DMs are usually a single conversation thread)
-  if (!sessionId && ctx.chat?.type === "private") {
-    // Find most recent session for this chat
-    for (const [key, sid] of msgSessions.entries()) {
-      if (key.startsWith(`${chatId}:`)) {
-        sessionId = sid
-        // Don't break — we want the latest one (Map preserves insertion order)
+  if (!forceNewSession) {
+    // Try to continue existing session
+    if (replyToBot && replyTo) {
+      const key = `${chatId}:${replyTo.message_id}`
+      sessionId = msgSessions.get(key)
+    }
+    // Fall back to latest session for this chat
+    if (!sessionId) {
+      for (const [key, sid] of msgSessions.entries()) {
+        if (key.startsWith(`${chatId}:`)) {
+          sessionId = sid
+        }
       }
     }
   }
@@ -364,9 +365,7 @@ async function processMessage(ctx: Context, text: string, chatId: string, sender
         ? `Telegram DM: ${username}`
         : `Telegram: ${(ctx.chat as any)?.title ?? chatId}`
 
-    const result = await opencode.client.session.create({
-      body: { title: chatTitle },
-    })
+    const result = await opencode.client.session.create({ title: chatTitle })
     if (result.error) {
       console.error("Session create error:", JSON.stringify(result.error))
       await ctx.reply("Failed to create session. Please try again.").catch(() => {})
@@ -396,31 +395,21 @@ async function processMessage(ctx: Context, text: string, chatId: string, sender
     })
   })
 
-  // Send to opencode — prompt() blocks until done, but SSE events stream in parallel
-  // Fire prompt in background, let SSE handler resolve streamDone
-  const promptPromise = opencode.client.session.prompt({
-    path: { id: sessionId! },
-    body: { parts: [{ type: "text", text: prompt }] },
-  }).then((result: any) => {
+  // Fire prompt in background — SSE events drive streaming
+  opencode.client.session.prompt({
+    sessionID: sessionId!,
+    parts: [{ type: "text", text: prompt }],
+  }).then((result) => {
     if (result.error) {
       console.error("Prompt error:", JSON.stringify(result.error))
+      const s = activeStreams.get(sessionId!)
+      if (s && s.phase !== "done") { s.phase = "done"; s.resolve() }
     }
-    // Resolve stream if SSE hasn't already
-    const s = activeStreams.get(sessionId!)
-    if (s && s.phase !== "done") {
-      // Extract from prompt result as fallback
-      if (!result.error && result.data) {
-        const parts = result.data.parts ?? []
-        s.text = s.text || parts.filter((p: any) => p.type === "text").map((p: any) => p.text).join("\n")
-        s.reasoning = s.reasoning || parts.filter((p: any) => p.type === "reasoning").map((p: any) => p.text).join("\n")
-      }
-      s.phase = "done"
-      s.resolve()
-    }
+    // Don't resolve on success — let SSE message.updated with content handle it
   }).catch((err: any) => {
     console.error("Prompt exception:", err)
     const s = activeStreams.get(sessionId!)
-    if (s) { s.phase = "done"; s.resolve() }
+    if (s && s.phase !== "done") { s.phase = "done"; s.resolve() }
   })
 
   // Wait for streaming to complete (resolved by SSE or prompt completion)
@@ -436,8 +425,6 @@ async function processMessage(ctx: Context, text: string, chatId: string, sender
   activeStreams.delete(sessionId!)
 
   if (!stream) return
-
-  // prompt() result already populated stream.text/reasoning as fallback
 
   // Build final message with expandable blockquote for thinking
   let finalText = ""
