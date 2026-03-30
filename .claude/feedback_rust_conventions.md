@@ -37,3 +37,19 @@ When writing or modifying Rust code, follow these conventions:
 8. **Disable proxy for localhost clients** — when creating reqwest clients that only talk to localhost, use `Client::builder().no_proxy().build()`.
    **Why:** Avoids routing local traffic through system proxy, which would fail or add unnecessary latency.
    **How to apply:** Any HTTP client used exclusively for local service communication.
+
+9. **Return errors to callers, don't silently log** — functions should return `Result`, not swallow errors with `eprintln!` and return defaults. Let the caller decide how to handle it (e.g. show error to the user in Telegram).
+   **Why:** Silent failures hide problems from users who can't access server logs. Errors should surface to where they can be acted on.
+   **How to apply:** Any function that catches errors internally and returns empty/default values.
+
+10. **Return borrowed slices instead of cloning** — prefer returning `&[T]` over `Vec<T>` when the data is owned by the callee. Let callers `.to_vec()` if they truly need ownership.
+    **Why:** Avoids unnecessary allocations and clones. Most callers only need to iterate or pass references.
+    **How to apply:** Any getter/cache method that returns a collection from an owned field.
+
+11. **Use file mtime for cache invalidation, not TTL** — when caching file contents, compare the file's modification time to decide whether to reload, not a fixed time interval.
+    **Why:** mtime reloads exactly when the file changes — no stale data, no unnecessary re-reads.
+    **How to apply:** Any cache backed by a file on disk.
+
+12. **Don't cache with TTL when data is static** — if the underlying data doesn't change during the process lifetime (e.g. model list from a long-running server), fetch once and cache permanently. No TTL needed.
+    **Why:** TTL implies the data might change, which is misleading and adds pointless complexity.
+    **How to apply:** Any cache where the data source is immutable for the process lifetime.
