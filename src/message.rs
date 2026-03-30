@@ -3,7 +3,7 @@ use crate::download::{download_telegram_file, AttachedFile};
 use crate::markdown::sanitize_for_xml;
 use crate::models::{build_model_keyboard, ModelCache};
 use crate::opencode::{ModelRef, OpencodeClient, PromptPart};
-use crate::session::BoundedMap;
+use crate::session::SessionStore;
 use crate::stream::StreamState;
 use crate::telegram::{CallbackQuery, Message, SendOpts, TelegramClient, Update};
 use serde_json::json;
@@ -24,8 +24,8 @@ pub struct BotState {
     pub oc: OpencodeClient,
     pub access_cache: AccessCache,
     pub model_cache: ModelCache,
-    pub msg_sessions: BoundedMap<String>,
-    pub msg_model_override: BoundedMap<String>,
+    pub sessions: Box<dyn SessionStore>,
+    pub model_overrides: HashMap<String, String>,
     pub active_streams: HashMap<String, StreamState>,
     pub pending_queue: HashMap<String, VecDeque<QueuedMessage>>,
     pub bot_id: i64,
@@ -153,18 +153,15 @@ async fn handle_message(
         }
 
         // Try exact message match first, then fallback to most recent session in this chat
+        let chat_id_num: i64 = chat_id.parse().unwrap_or(0);
         let session_id = msg
             .reply_to_message
             .as_ref()
             .and_then(|r| {
-                let key = format!("{}:{}", chat_id, r.message_id);
-                state.msg_sessions.get(&key).cloned()
+                state.sessions.get_by_message(chat_id_num, r.message_id).ok().flatten()
             })
             .or_else(|| {
-                state
-                    .msg_sessions
-                    .find_last_by_prefix(&format!("{}:", chat_id))
-                    .cloned()
+                state.sessions.get_latest_session(chat_id_num).ok().flatten()
             });
 
         if let Some(sid) = session_id {
@@ -326,7 +323,7 @@ async fn process_message(
                 )
                 .await
             {
-                state.msg_model_override.insert(
+                state.model_overrides.insert(
                     format!("{}:{}", chat_id, sent.message_id),
                     model_override.unwrap(),
                 );
@@ -346,7 +343,7 @@ async fn process_message(
     if model_override.is_none() && reply_to_bot
         && let Some(reply_msg) = &msg.reply_to_message {
             let key = format!("{}:{}", chat_id, reply_msg.message_id);
-            model_override = state.msg_model_override.remove(&key);
+            model_override = state.model_overrides.remove(&key);
         }
 
     // Detect @mention → force new session in groups
@@ -363,18 +360,15 @@ async fn process_message(
 
     // Resolve session
     let mut session_id: Option<String> = None;
+    let chat_id_num: i64 = chat_id.parse().unwrap_or(0);
 
     if !force_new_session {
         if reply_to_bot
             && let Some(reply_msg) = &msg.reply_to_message {
-                let key = format!("{}:{}", chat_id, reply_msg.message_id);
-                session_id = state.msg_sessions.get(&key).cloned();
+                session_id = state.sessions.get_by_message(chat_id_num, reply_msg.message_id).ok().flatten();
             }
         if session_id.is_none() {
-            session_id = state
-                .msg_sessions
-                .find_last_by_prefix(&format!("{}:", chat_id))
-                .cloned();
+            session_id = state.sessions.get_latest_session(chat_id_num).ok().flatten();
         }
     }
 
@@ -667,7 +661,7 @@ async fn handle_callback(state: &mut BotState, cb: &CallbackQuery) {
             .await;
         if let Some(msg_id) = cb.message.as_ref().map(|m| m.message_id) {
             state
-                .msg_model_override
+                .model_overrides
                 .insert(format!("{}:{}", chat_id, msg_id), model.to_string());
         }
         let _ = state

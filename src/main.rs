@@ -17,7 +17,7 @@ use crate::markdown::{split_message, thinking_to_md2, to_markdown_v2, tools_to_m
 use crate::message::BotState;
 use crate::models::ModelCache;
 use crate::opencode::{OpencodeClient, OpencodeServer};
-use crate::session::BoundedMap;
+use crate::session::SqliteSessionStore;
 use crate::sse::{SseEvent, SseStream};
 use crate::stream::{Phase, StreamState};
 use crate::telegram::{SendOpts, TelegramClient};
@@ -56,13 +56,15 @@ async fn main() -> anyhow::Result<()> {
     println!("SSE subscriber connected");
 
     // Build bot state
+    let sessions = SqliteSessionStore::open(&config.state_dir.join("sessions.db"))
+        .context("open session store")?;
     let mut state = BotState {
         tg,
         oc,
         access_cache: AccessCache::new(config.access_file.clone()),
         model_cache: ModelCache::new(),
-        msg_sessions: BoundedMap::new(5000),
-        msg_model_override: BoundedMap::new(5000),
+        sessions: Box::new(sessions),
+        model_overrides: HashMap::new(),
         active_streams: HashMap::new(),
         pending_queue: HashMap::new(),
         bot_id: me.id,
@@ -380,10 +382,8 @@ async fn finalize_stream(state: &mut BotState, session_id: &str, stream: StreamS
     for chunk in &chunks {
         match state.tg.send_message(chat_id, chunk, &send_opts).await {
             Ok(sent) => {
-                state.msg_sessions.insert(
-                    format!("{}:{}", chat_id, sent.message_id),
-                    session_id.to_string(),
-                );
+                let chat_id_num: i64 = chat_id.parse().unwrap_or(0);
+                let _ = state.sessions.link_message(chat_id_num, sent.message_id, session_id);
             }
             Err(e) => {
                 eprintln!("MarkdownV2 send failed: {}", e);
@@ -406,10 +406,8 @@ async fn finalize_stream(state: &mut BotState, session_id: &str, stream: StreamS
                 let plain_chunks = split_message(&plain, 4096);
                 for pc in &plain_chunks {
                     if let Ok(sent) = state.tg.send_message(chat_id, pc, &plain_opts).await {
-                        state.msg_sessions.insert(
-                            format!("{}:{}", chat_id, sent.message_id),
-                            session_id.to_string(),
-                        );
+                        let chat_id_num: i64 = chat_id.parse().unwrap_or(0);
+                        let _ = state.sessions.link_message(chat_id_num, sent.message_id, session_id);
                     }
                 }
                 break; // Already sent everything as plain text

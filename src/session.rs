@@ -1,53 +1,86 @@
-use std::collections::{HashMap, VecDeque};
+use anyhow::{Context, Result};
+use rusqlite::{params, Connection};
+use std::path::Path;
 
-/// A HashMap with a maximum size. When full, the oldest entry is evicted.
-pub struct BoundedMap<V> {
-    map: HashMap<String, V>,
-    order: VecDeque<String>,
-    max_size: usize,
+pub trait SessionStore {
+    /// Link a bot message to a session.
+    fn link_message(&self, chat_id: i64, msg_id: i64, session_id: &str) -> Result<()>;
+
+    /// Look up which session a bot message belongs to.
+    fn get_by_message(&self, chat_id: i64, msg_id: i64) -> Result<Option<String>>;
+
+    /// Get the most recently linked session for a chat.
+    fn get_latest_session(&self, chat_id: i64) -> Result<Option<String>>;
 }
 
-impl<V> BoundedMap<V> {
-    pub fn new(max_size: usize) -> Self {
-        BoundedMap {
-            map: HashMap::new(),
-            order: VecDeque::new(),
-            max_size,
-        }
-    }
+pub struct SqliteSessionStore {
+    conn: Connection,
+}
 
-    pub fn insert(&mut self, key: String, value: V) {
-        if self.map.len() >= self.max_size && !self.map.contains_key(&key)
-            && let Some(oldest) = self.order.pop_front() {
-                self.map.remove(&oldest);
-            }
-        if !self.map.contains_key(&key) {
-            self.order.push_back(key.clone());
+impl SqliteSessionStore {
+    pub fn open(path: &Path) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create dir {}", parent.display()))?;
         }
-        self.map.insert(key, value);
-    }
+        let conn = Connection::open(path).context("open session database")?;
 
-    pub fn get(&self, key: &str) -> Option<&V> {
-        self.map.get(key)
-    }
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             CREATE TABLE IF NOT EXISTS msg_session (
+                 id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                 chat_id  INTEGER NOT NULL,
+                 msg_id   INTEGER NOT NULL,
+                 session_id TEXT NOT NULL,
+                 UNIQUE (chat_id, msg_id)
+             );
+             CREATE INDEX IF NOT EXISTS idx_chat_id
+                 ON msg_session (chat_id);",
+        )
+        .context("initialize session database schema")?;
 
-    pub fn remove(&mut self, key: &str) -> Option<V> {
-        if let Some(v) = self.map.remove(key) {
-            self.order.retain(|k| k != key);
-            Some(v)
-        } else {
-            None
-        }
-    }
-
-    /// Find the last value whose key starts with the given prefix.
-    /// Iterates from newest to oldest for fast lookups (typically O(1)).
-    pub fn find_last_by_prefix(&self, prefix: &str) -> Option<&V> {
-        for key in self.order.iter().rev() {
-            if key.starts_with(prefix) {
-                return self.map.get(key);
-            }
-        }
-        None
+        Ok(SqliteSessionStore { conn })
     }
 }
+
+impl SessionStore for SqliteSessionStore {
+    fn link_message(&self, chat_id: i64, msg_id: i64, session_id: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO msg_session (chat_id, msg_id, session_id) VALUES (?1, ?2, ?3)",
+                params![chat_id, msg_id, session_id],
+            )
+            .context("link_message")?;
+        Ok(())
+    }
+
+    fn get_by_message(&self, chat_id: i64, msg_id: i64) -> Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT session_id FROM msg_session WHERE chat_id = ?1 AND msg_id = ?2")
+            .context("get_by_message prepare")?;
+        let result = stmt
+            .query_row(params![chat_id, msg_id], |row| row.get(0))
+            .optional()
+            .context("get_by_message query")?;
+        Ok(result)
+    }
+
+    fn get_latest_session(&self, chat_id: i64) -> Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare_cached(
+                "SELECT session_id FROM msg_session WHERE chat_id = ?1 ORDER BY id DESC LIMIT 1",
+            )
+            .context("get_latest_session prepare")?;
+        let result = stmt
+            .query_row(params![chat_id], |row| row.get(0))
+            .optional()
+            .context("get_latest_session query")?;
+        Ok(result)
+    }
+}
+
+// Re-export the optional extension for ergonomic query handling
+use rusqlite::OptionalExtension;
