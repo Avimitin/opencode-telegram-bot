@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Access {
@@ -63,9 +62,7 @@ impl AccessCache {
     }
 
     pub fn load(&mut self) -> Access {
-        let current_mtime = fs::metadata(&self.path)
-            .and_then(|m| m.modified())
-            .ok();
+        let current_mtime = fs::metadata(&self.path).and_then(|m| m.modified()).ok();
 
         // Return cached data if file hasn't been modified
         if let Some(ref data) = self.data
@@ -93,9 +90,7 @@ impl AccessCache {
         }
         self.data = Some(access.clone());
         // Update cached mtime after writing
-        self.last_mtime = fs::metadata(&self.path)
-            .and_then(|m| m.modified())
-            .ok();
+        self.last_mtime = fs::metadata(&self.path).and_then(|m| m.modified()).ok();
     }
 }
 

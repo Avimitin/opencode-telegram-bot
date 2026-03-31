@@ -1,6 +1,6 @@
 use reqwest::Client;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub struct TelegramClient {
     client: Client,
@@ -164,11 +164,7 @@ impl TelegramClient {
         self.call("getMe", json!({})).await
     }
 
-    pub async fn get_updates(
-        &self,
-        offset: i64,
-        timeout: u32,
-    ) -> Result<Vec<Update>, String> {
+    pub async fn get_updates(&self, offset: i64, timeout: u32) -> Result<Vec<Update>, String> {
         self.call(
             "getUpdates",
             json!({ "offset": offset, "timeout": timeout, "allowed_updates": ["message", "callback_query"] }),
@@ -275,7 +271,6 @@ impl TelegramClient {
             .await?;
         Ok(())
     }
-
 
     pub async fn answer_callback_query(
         &self,

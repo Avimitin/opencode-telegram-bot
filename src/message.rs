@@ -1,7 +1,7 @@
 use crate::access::{self, AccessCache, GateResult};
-use crate::download::{download_telegram_file, AttachedFile};
+use crate::download::{AttachedFile, download_telegram_file};
 use crate::markdown::sanitize_for_xml;
-use crate::models::{build_model_keyboard, ModelCache};
+use crate::models::{ModelCache, build_model_keyboard};
 use crate::opencode::{ModelRef, OpencodeClient, PromptPart};
 use crate::session::SessionStore;
 use crate::stream::StreamState;
@@ -39,32 +39,25 @@ pub async fn handle_update(state: &mut BotState, update: &Update) {
         if let Some(ref photos) = msg.photo {
             // Get largest photo
             if let Some(largest) = photos.last()
-                && let Some(file) = download_telegram_file(
-                    &state.tg,
-                    &largest.file_id,
-                    "image/jpeg",
-                    "photo.jpg",
-                )
-                .await
-                {
-                    files.push(file);
-                }
+                && let Some(file) =
+                    download_telegram_file(&state.tg, &largest.file_id, "image/jpeg", "photo.jpg")
+                        .await
+            {
+                files.push(file);
+            }
             text = msg.caption.clone().unwrap_or_else(|| "(photo)".to_string());
         } else if let Some(ref doc) = msg.document {
             let mime = doc
                 .mime_type
                 .clone()
                 .unwrap_or_else(|| "application/octet-stream".to_string());
-            let filename = doc
-                .file_name
-                .clone()
-                .unwrap_or_else(|| "file".to_string());
+            let filename = doc.file_name.clone().unwrap_or_else(|| "file".to_string());
             if mime.starts_with("image/")
                 && let Some(file) =
                     download_telegram_file(&state.tg, &doc.file_id, &mime, &filename).await
-                {
-                    files.push(file);
-                }
+            {
+                files.push(file);
+            }
             text = msg
                 .caption
                 .clone()
@@ -75,10 +68,7 @@ pub async fn handle_update(state: &mut BotState, update: &Update) {
                 .clone()
                 .unwrap_or_else(|| "(voice message)".to_string());
         } else if msg.video.is_some() {
-            text = msg
-                .caption
-                .clone()
-                .unwrap_or_else(|| "(video)".to_string());
+            text = msg.caption.clone().unwrap_or_else(|| "(video)".to_string());
         } else if let Some(ref sticker) = msg.sticker {
             let emoji = sticker
                 .emoji
@@ -100,14 +90,13 @@ pub async fn handle_update(state: &mut BotState, update: &Update) {
     }
 }
 
-async fn handle_message(
-    state: &mut BotState,
-    msg: &Message,
-    text: &str,
-    files: Vec<AttachedFile>,
-) {
+async fn handle_message(state: &mut BotState, msg: &Message, text: &str, files: Vec<AttachedFile>) {
     let chat_id = msg.chat.id.to_string();
-    let sender_id = msg.from.as_ref().map(|u| u.id.to_string()).unwrap_or_default();
+    let sender_id = msg
+        .from
+        .as_ref()
+        .map(|u| u.id.to_string())
+        .unwrap_or_default();
     let msg_id = msg.message_id;
     let thread_id = msg.message_thread_id;
     let reply_opts = SendOpts {
@@ -157,10 +146,18 @@ async fn handle_message(
             .reply_to_message
             .as_ref()
             .and_then(|r| {
-                state.sessions.get_by_message(chat_id_num, r.message_id).ok().flatten()
+                state
+                    .sessions
+                    .get_by_message(chat_id_num, r.message_id)
+                    .ok()
+                    .flatten()
             })
             .or_else(|| {
-                state.sessions.get_latest_session(chat_id_num).ok().flatten()
+                state
+                    .sessions
+                    .get_latest_session(chat_id_num)
+                    .ok()
+                    .flatten()
             });
 
         if let Some(sid) = session_id {
@@ -200,7 +197,11 @@ async fn handle_message(
             Err(e) => {
                 let _ = state
                     .tg
-                    .send_message(&chat_id, &format!("Failed to fetch models: {}", e), &reply_opts)
+                    .send_message(
+                        &chat_id,
+                        &format!("Failed to fetch models: {}", e),
+                        &reply_opts,
+                    )
                     .await;
                 return;
             }
@@ -222,7 +223,11 @@ async fn handle_message(
             Err(e) => {
                 let _ = state
                     .tg
-                    .send_message(&chat_id, &format!("Failed to fetch models: {}", e), &reply_opts)
+                    .send_message(
+                        &chat_id,
+                        &format!("Failed to fetch models: {}", e),
+                        &reply_opts,
+                    )
                     .await;
                 return;
             }
@@ -275,10 +280,7 @@ async fn handle_message(
             let mut access = state.access_cache.load();
             let reply = access::handle_pairing(&mut access, &sender_id, &chat_id);
             state.access_cache.save(&access);
-            let _ = state
-                .tg
-                .send_message(&chat_id, &reply, &reply_opts)
-                .await;
+            let _ = state.tg.send_message(&chat_id, &reply, &reply_opts).await;
             return;
         }
         GateResult::Allow => {}
@@ -306,7 +308,10 @@ async fn process_message(
         .and_then(|re| re.captures(&clean_text))
     {
         model_override = Some(caps.get(1).unwrap().as_str().to_string());
-        clean_text = caps.get(2).map(|m| m.as_str().trim().to_string()).unwrap_or_default();
+        clean_text = caps
+            .get(2)
+            .map(|m| m.as_str().trim().to_string())
+            .unwrap_or_default();
 
         // Model-only message (no prompt)
         if clean_text.is_empty() && files.is_empty() {
@@ -339,11 +344,13 @@ async fn process_message(
         .map(|u| u.id == state.bot_id)
         .unwrap_or(false);
 
-    if model_override.is_none() && reply_to_bot
-        && let Some(reply_msg) = &msg.reply_to_message {
-            let key = format!("{}:{}", chat_id, reply_msg.message_id);
-            model_override = state.model_overrides.remove(&key);
-        }
+    if model_override.is_none()
+        && reply_to_bot
+        && let Some(reply_msg) = &msg.reply_to_message
+    {
+        let key = format!("{}:{}", chat_id, reply_msg.message_id);
+        model_override = state.model_overrides.remove(&key);
+    }
 
     // Detect @mention → force new session in groups
     let is_group = msg.chat.chat_type == "group" || msg.chat.chat_type == "supergroup";
@@ -362,12 +369,19 @@ async fn process_message(
     let chat_id_num: i64 = chat_id.parse().unwrap_or(0);
 
     if !force_new_session {
-        if reply_to_bot
-            && let Some(reply_msg) = &msg.reply_to_message {
-                session_id = state.sessions.get_by_message(chat_id_num, reply_msg.message_id).ok().flatten();
-            }
+        if reply_to_bot && let Some(reply_msg) = &msg.reply_to_message {
+            session_id = state
+                .sessions
+                .get_by_message(chat_id_num, reply_msg.message_id)
+                .ok()
+                .flatten();
+        }
         if session_id.is_none() {
-            session_id = state.sessions.get_latest_session(chat_id_num).ok().flatten();
+            session_id = state
+                .sessions
+                .get_latest_session(chat_id_num)
+                .ok()
+                .flatten();
         }
     }
 
@@ -380,10 +394,7 @@ async fn process_message(
         let chat_title = if msg.chat.chat_type == "private" {
             format!("Telegram DM: {}", username)
         } else {
-            format!(
-                "Telegram: {}",
-                msg.chat.title.as_deref().unwrap_or(chat_id)
-            )
+            format!("Telegram: {}", msg.chat.title.as_deref().unwrap_or(chat_id))
         };
 
         match state.oc.session_create(&chat_title).await {
@@ -421,33 +432,32 @@ async fn process_message(
 
     // When replying to another user's message (not the bot), include quoted context
     let mut quoted_context = String::new();
-    if !reply_to_bot
-        && let Some(reply_msg) = &msg.reply_to_message {
-            let reply_text = reply_msg
-                .text
-                .as_deref()
-                .or(reply_msg.caption.as_deref())
-                .unwrap_or("");
-            if !reply_text.is_empty() {
-                let reply_user = reply_msg
-                    .from
-                    .as_ref()
-                    .and_then(|u| u.username.clone().or(Some(u.first_name.clone())))
-                    .unwrap_or_else(|| "unknown".to_string());
-                let reply_uid = reply_msg
-                    .from
-                    .as_ref()
-                    .map(|u| u.id.to_string())
-                    .unwrap_or_default();
-                quoted_context = format!(
-                    "<quoted-message user=\"{}\" user_id=\"{}\" message_id=\"{}\">\n{}\n</quoted-message>\n",
-                    sanitize_for_xml(&reply_user),
-                    reply_uid,
-                    reply_msg.message_id,
-                    sanitize_for_xml(reply_text)
-                );
-            }
+    if !reply_to_bot && let Some(reply_msg) = &msg.reply_to_message {
+        let reply_text = reply_msg
+            .text
+            .as_deref()
+            .or(reply_msg.caption.as_deref())
+            .unwrap_or("");
+        if !reply_text.is_empty() {
+            let reply_user = reply_msg
+                .from
+                .as_ref()
+                .and_then(|u| u.username.clone().or(Some(u.first_name.clone())))
+                .unwrap_or_else(|| "unknown".to_string());
+            let reply_uid = reply_msg
+                .from
+                .as_ref()
+                .map(|u| u.id.to_string())
+                .unwrap_or_default();
+            quoted_context = format!(
+                "<quoted-message user=\"{}\" user_id=\"{}\" message_id=\"{}\">\n{}\n</quoted-message>\n",
+                sanitize_for_xml(&reply_user),
+                reply_uid,
+                reply_msg.message_id,
+                sanitize_for_xml(reply_text)
+            );
         }
+    }
 
     let prompt = format!(
         "<channel source=\"telegram\" chat_id=\"{}\" message_id=\"{}\" user=\"{}\" user_id=\"{}\" ts=\"{}\">\n{}{}\n</channel>",
@@ -502,15 +512,19 @@ async fn process_message(
     }
 
     // Set up streaming
-    dispatch_prompt(state, PromptParams {
-        chat_id,
-        msg_id,
-        thread_id,
-        is_dm,
-        session_id: &session_id,
-        parts,
-        model,
-    }).await;
+    dispatch_prompt(
+        state,
+        PromptParams {
+            chat_id,
+            msg_id,
+            thread_id,
+            is_dm,
+            session_id: &session_id,
+            parts,
+            model,
+        },
+    )
+    .await;
 }
 
 /// Send a prompt and set up the streaming state. Used both for immediate
@@ -526,13 +540,26 @@ pub struct PromptParams<'a> {
 }
 
 pub async fn dispatch_prompt(state: &mut BotState, params: PromptParams<'_>) {
-    let PromptParams { chat_id, msg_id, thread_id, is_dm, session_id, parts, model } = params;
+    let PromptParams {
+        chat_id,
+        msg_id,
+        thread_id,
+        is_dm,
+        session_id,
+        parts,
+        model,
+    } = params;
     // Detect language from prompt text for the placeholder
-    let has_cjk = parts.first()
+    let has_cjk = parts
+        .first()
         .and_then(|p| p.text.as_ref())
         .map(|t| t.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c)))
         .unwrap_or(false);
-    let placeholder = if has_cjk { "思考中…" } else { "Thinking…" };
+    let placeholder = if has_cjk {
+        "思考中…"
+    } else {
+        "Thinking…"
+    };
 
     let mut placeholder_msg_id: Option<i64> = None;
     let opts = SendOpts {
@@ -595,18 +622,32 @@ async fn handle_stat(state: &mut BotState, chat_id: &str, session_id: &str, opts
         };
         let role = info.get("role").and_then(|v| v.as_str()).unwrap_or("");
 
-        if role == "user" && model_id.is_empty()
-            && let Some(model) = info.get("model") {
-                provider_id = model.get("providerID").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                model_id = model.get("modelID").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            }
+        if role == "user"
+            && model_id.is_empty()
+            && let Some(model) = info.get("model")
+        {
+            provider_id = model
+                .get("providerID")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            model_id = model
+                .get("modelID")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+        }
 
         if role == "assistant" {
             if let Some(tokens) = info.get("tokens") {
                 total_input += tokens.get("input").and_then(|v| v.as_i64()).unwrap_or(0);
                 total_output += tokens.get("output").and_then(|v| v.as_i64()).unwrap_or(0);
-                total_reasoning += tokens.get("reasoning").and_then(|v| v.as_i64()).unwrap_or(0);
-                total_cache_read += tokens.get("cache")
+                total_reasoning += tokens
+                    .get("reasoning")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                total_cache_read += tokens
+                    .get("cache")
                     .and_then(|c| c.get("read"))
                     .and_then(|v| v.as_i64())
                     .unwrap_or(0);
@@ -638,10 +679,7 @@ async fn handle_stat(state: &mut BotState, chat_id: &str, session_id: &str, opts
         total_tokens,
     );
 
-    let _ = state
-        .tg
-        .send_message(chat_id, &stat_text, opts)
-        .await;
+    let _ = state.tg.send_message(chat_id, &stat_text, opts).await;
 }
 
 async fn handle_callback(state: &mut BotState, cb: &CallbackQuery) {

@@ -10,7 +10,6 @@ mod sse;
 mod stream;
 mod telegram;
 
-use anyhow::Context;
 use crate::access::AccessCache;
 use crate::config::Config;
 use crate::markdown::{split_message, thinking_to_md2, to_markdown_v2, tools_to_md2};
@@ -21,6 +20,7 @@ use crate::session::SqliteSessionStore;
 use crate::sse::{SseEvent, SseStream};
 use crate::stream::{Phase, StreamState};
 use crate::telegram::{SendOpts, TelegramClient};
+use anyhow::Context;
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -141,7 +141,6 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-
 /// Reconnect to SSE with exponential backoff (capped at 30s, max 10 retries).
 async fn reconnect_sse(oc: &OpencodeClient) -> anyhow::Result<SseStream> {
     const MAX_RETRIES: u32 = 10;
@@ -154,7 +153,10 @@ async fn reconnect_sse(oc: &OpencodeClient) -> anyhow::Result<SseStream> {
                 return Ok(SseStream::new(r));
             }
             Err(e) => {
-                eprintln!("SSE reconnect failed (attempt {}/{}): {}", attempt, MAX_RETRIES, e);
+                eprintln!(
+                    "SSE reconnect failed (attempt {}/{}): {}",
+                    attempt, MAX_RETRIES, e
+                );
                 delay = (delay * 2).min(std::time::Duration::from_secs(30));
             }
         }
@@ -178,12 +180,18 @@ async fn handle_sse_event(state: &mut BotState, event: SseEvent) {
         .unwrap_or("");
 
     // Log non-heartbeat SSE events for diagnostics
-    if event_type != "server.heartbeat" && event_type != "server.connected"
+    if event_type != "server.heartbeat"
+        && event_type != "server.connected"
         && event_type != "message.part.delta"
     {
         let data_str = event.data.to_string();
-        let limit = if event_type == "session.error" { 500 } else { 200 };
-        let end = data_str.char_indices()
+        let limit = if event_type == "session.error" {
+            500
+        } else {
+            200
+        };
+        let end = data_str
+            .char_indices()
             .take_while(|&(i, _)| i <= limit)
             .last()
             .map(|(i, c)| i + c.len_utf8())
@@ -235,8 +243,7 @@ async fn handle_sse_event(state: &mut BotState, event: SseEvent) {
                         .and_then(|s| s.get("status"))
                         .and_then(|v| v.as_str());
                     if status == Some("completed") {
-                        let tool_name =
-                            part.get("tool").and_then(|v| v.as_str()).unwrap_or("?");
+                        let tool_name = part.get("tool").and_then(|v| v.as_str()).unwrap_or("?");
                         let title = part
                             .get("state")
                             .and_then(|s| s.get("title"))
@@ -251,20 +258,19 @@ async fn handle_sse_event(state: &mut BotState, event: SseEvent) {
             }
 
             // Throttled streaming display — update single message with all content
-            let should_update = matches!(part_type, "reasoning" | "text" | "tool")
-                && stream.should_update();
-            if should_update
-                && let Some(display) = stream.display_text() {
-                    let chat_id = stream.chat_id.clone();
-                    if let Some(stream_msg_id) = stream.stream_msg_id {
-                        let markup = message::stop_button(&session_id);
-                        let _ = state
-                            .tg
-                            .edit_message_text_markup(&chat_id, stream_msg_id, &display, &markup)
-                            .await;
-                    }
-                    stream.mark_updated();
+            let should_update =
+                matches!(part_type, "reasoning" | "text" | "tool") && stream.should_update();
+            if should_update && let Some(display) = stream.display_text() {
+                let chat_id = stream.chat_id.clone();
+                if let Some(stream_msg_id) = stream.stream_msg_id {
+                    let markup = message::stop_button(&session_id);
+                    let _ = state
+                        .tg
+                        .edit_message_text_markup(&chat_id, stream_msg_id, &display, &markup)
+                        .await;
                 }
+                stream.mark_updated();
+            }
         }
     }
 
@@ -277,7 +283,9 @@ async fn handle_sse_event(state: &mut BotState, event: SseEvent) {
             .and_then(|d| d.get("message"))
             .and_then(|v| v.as_str())
             .or_else(|| {
-                event.data.get("properties")
+                event
+                    .data
+                    .get("properties")
                     .and_then(|p| p.get("error"))
                     .and_then(|e| e.get("message"))
                     .and_then(|v| v.as_str())
@@ -380,7 +388,9 @@ async fn finalize_stream(state: &mut BotState, session_id: &str, stream: StreamS
         match state.tg.send_message(chat_id, chunk, &send_opts).await {
             Ok(sent) => {
                 let chat_id_num: i64 = chat_id.parse().unwrap_or(0);
-                let _ = state.sessions.link_message(chat_id_num, sent.message_id, session_id);
+                let _ = state
+                    .sessions
+                    .link_message(chat_id_num, sent.message_id, session_id);
             }
             Err(e) => {
                 eprintln!("MarkdownV2 send failed: {}", e);
@@ -404,7 +414,10 @@ async fn finalize_stream(state: &mut BotState, session_id: &str, stream: StreamS
                 for pc in &plain_chunks {
                     if let Ok(sent) = state.tg.send_message(chat_id, pc, &plain_opts).await {
                         let chat_id_num: i64 = chat_id.parse().unwrap_or(0);
-                        let _ = state.sessions.link_message(chat_id_num, sent.message_id, session_id);
+                        let _ =
+                            state
+                                .sessions
+                                .link_message(chat_id_num, sent.message_id, session_id);
                     }
                 }
                 break; // Already sent everything as plain text
@@ -414,25 +427,26 @@ async fn finalize_stream(state: &mut BotState, session_id: &str, stream: StreamS
 
     // Drain pending queue: dispatch the next queued message for this session
     if let Some(queue) = state.pending_queue.get_mut(session_id)
-        && let Some(queued) = queue.pop_front() {
-            if queue.is_empty() {
-                state.pending_queue.remove(session_id);
-            }
-            let sid = session_id.to_string();
-            message::dispatch_prompt(
-                state,
-                message::PromptParams {
-                    chat_id: &queued.chat_id,
-                    msg_id: queued.msg_id,
-                    thread_id: queued.thread_id,
-                    is_dm: queued.is_dm,
-                    session_id: &sid,
-                    parts: queued.parts,
-                    model: queued.model,
-                },
-            )
-            .await;
+        && let Some(queued) = queue.pop_front()
+    {
+        if queue.is_empty() {
+            state.pending_queue.remove(session_id);
         }
+        let sid = session_id.to_string();
+        message::dispatch_prompt(
+            state,
+            message::PromptParams {
+                chat_id: &queued.chat_id,
+                msg_id: queued.msg_id,
+                thread_id: queued.thread_id,
+                is_dm: queued.is_dm,
+                session_id: &sid,
+                parts: queued.parts,
+                model: queued.model,
+            },
+        )
+        .await;
+    }
 }
 
 async fn poll_approved(tg: &TelegramClient, approved_dir: &std::path::Path) {

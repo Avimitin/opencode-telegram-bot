@@ -21,7 +21,7 @@
 use anyhow::Context;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::process::Stdio;
 use tokio::process::{Child, Command};
 
@@ -51,7 +51,9 @@ impl OpencodeServer {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
 
-        let child = cmd.spawn().context("spawn opencode serve — is 'opencode' in PATH?")?;
+        let child = cmd
+            .spawn()
+            .context("spawn opencode serve — is 'opencode' in PATH?")?;
 
         // Poll health endpoint until server is ready
         let client = Client::builder().no_proxy().build()?;

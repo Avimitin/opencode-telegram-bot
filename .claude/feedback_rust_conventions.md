@@ -78,10 +78,20 @@ When writing or modifying Rust code, follow these conventions:
    **Why:** A trivial wrapper called once adds a name readers must track and a jump they must follow, for zero reuse benefit. Inlining keeps the logic visible where it matters.
    **How to apply:** When a function has a single call site and its body is trivial, move the body to the caller and remove the function definition.
 
-20. **Run `nix develop --command cargo clippy` before reporting work is done** — after every code change, run clippy (via nix dev shell) and fix any warnings or errors before considering the task complete.
-   **Why:** Catching issues early prevents regressions from accumulating. Clippy enforces idiomatic Rust and catches common mistakes that compile but are wrong or misleading.
-   **How to apply:** Make it the last step of every code change — modify code, run `nix develop --command cargo clippy`, fix findings, repeat until clean.
+19. **Always run `cargo` inside the nix dev shell** — use `nix develop --command cargo <cmd>` to ensure the project-local toolchain and dependencies are used consistently, regardless of what the host has installed.
+    ```
+    nix develop --command cargo build    # debug build
+    nix develop --command cargo clippy   # lint
+    nix develop --command cargo fmt      # format
+    nix develop --command cargo run      # start bot
+    ```
+    After every Rust change, run the following **in order**:
+    1. `nix develop --command cargo clippy` — catches warnings and errors
+    2. `nix develop --command cargo fmt` — enforces consistent formatting
+    Fix any findings, repeat until clean, before considering the task complete.
+    **Why:** Catching issues early prevents regressions. Clippy enforces idiomatic Rust, and fmt enforces consistent style.
+    **How to apply:** Make it the last step of every code change.
 
-19. **Don't introduce blocks to scope bindings unnecessarily** — prefer plain sequential `let` statements over `let x = { ... }` blocks unless the block has a semantic purpose (e.g. borrowing a field with temporary scope, or a mutex lock that must drop). Don't wrap code in blocks just to eagerly drop an intermediate variable.
+20. **Don't introduce blocks to scope bindings unnecessarily** — prefer plain sequential `let` statements over `let x = { ... }` blocks unless the block has a semantic purpose (e.g. borrowing a field with temporary scope, or a mutex lock that must drop). Don't wrap code in blocks just to eagerly drop an intermediate variable.
    **Why:** Extra blocks add nesting and visual noise for no real gain — the intermediate binding is harmless in the outer scope. Reserve blocks for cases where the scope truly matters (lock guards, shadowing, lifetime control).
    **How to apply:** `let x = { let y = foo(); Bar(y) };` → `let y = foo(); let x = Bar(y);`. Only use a block if `y` holds a resource (lock, file handle) whose early drop is intentional and documented.

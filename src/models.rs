@@ -1,5 +1,5 @@
 use crate::opencode::OpencodeClient;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub struct ModelEntry {
     pub full_id: String,
@@ -45,9 +45,10 @@ async fn fetch_models(client: &OpencodeClient) -> anyhow::Result<Vec<ModelEntry>
                 tags.push("🧠");
             }
             if let Some(ref modalities) = model.modalities
-                && modalities.input.contains(&"image".to_string()) {
-                    tags.push("🖼");
-                }
+                && modalities.input.contains(&"image".to_string())
+            {
+                tags.push("🖼");
+            }
             if model.attachment {
                 tags.push("📎");
             }

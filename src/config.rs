@@ -28,8 +28,9 @@ impl Config {
         let access_file = state_dir.join("access.json");
         let approved_dir = state_dir.join("approved");
 
-        let bot_token = env::var("TELEGRAM_BOT_TOKEN")
-            .context("TELEGRAM_BOT_TOKEN required (set via environment or systemd EnvironmentFile)")?;
+        let bot_token = env::var("TELEGRAM_BOT_TOKEN").context(
+            "TELEGRAM_BOT_TOKEN required (set via environment or systemd EnvironmentFile)",
+        )?;
 
         let opencode_config_path = PathBuf::from(
             env::var("OPENCODE_CONFIG_PATH")
