@@ -53,3 +53,23 @@ When writing or modifying Rust code, follow these conventions:
 12. **Don't cache with TTL when data is static** — if the underlying data doesn't change during the process lifetime (e.g. model list from a long-running server), fetch once and cache permanently. No TTL needed.
     **Why:** TTL implies the data might change, which is misleading and adds pointless complexity.
     **How to apply:** Any cache where the data source is immutable for the process lifetime.
+
+13. **Eliminate dead fields — don't keep unused struct fields** — if a struct field is never read, remove it entirely rather than suppressing the warning with `#[allow(dead_code)]`.
+    **Why:** Dead fields mislead readers into thinking the field is used somewhere, add unnecessary allocations at construction sites, and accumulate as dead weight. Removing them keeps the codebase honest.
+    **How to apply:** When adding a field, wire it through immediately. If a refactor leaves a field unread, delete it and all construction-site references.
+
+14. **Group related parameters into semantic structs, declare new types proactively** — when a function takes multiple parameters that belong to the same concept (e.g. Telegram message identity, chat context, session reference), introduce a named struct for that group. Don't wait for clippy's `too_many_arguments` lint — proactively recognize when arguments form a coherent unit and extract them. Aim to keep function signatures at 4 or fewer parameters.
+    **Why:** Named types make call sites self-documenting and let the compiler enforce correctness. Readers understand `PromptParams { chat_id, session_id, parts, .. }` at a glance but struggle with positional `(chat_id, msg_id, thread_id, is_dm, session_id, parts, model)`. Extracting early avoids painful refactors later as parameters grow.
+    **How to apply:** When designing a new function or adding a parameter to an existing one, look at the argument list and ask: "do any of these always travel together?" If yes, create a struct (e.g. `ChatContext<'a>`, `PromptParams<'a>`, `MessageRef`) with public fields. Use `let FooParams { a, b, .. } = params;` destructuring inside the function body.
+
+15. **Collapse nested `if let` / `if` guards into let-chains** — when an `if let` body contains another `if` condition, combine them with `&&` into a single let-chain.
+    **Why:** Rust 2024 edition supports let-chains natively. Nesting adds indentation and an extra block for no benefit — the collapsed form expresses the single guard condition more clearly.
+    **How to apply:** `if let Ok(x) = expr { if x.is_valid() { ... } }` becomes `if let Ok(x) = expr && x.is_valid() { ... }`.
+
+16. **Remove needless borrows — let the compiler auto-ref** — don't write `&value` at a call site when the function takes `&T` and `value` is already `T`. Let Rust's auto-ref coerce the reference.
+    **Why:** Explicit `&` where auto-ref handles it adds visual noise and clippy flags it as needless_borrow.
+    **How to apply:** Pass the owned value directly; only use `&` when the value would otherwise be moved and is needed later.
+
+17. **Simplify trivially identical branches** — if an `if`/`else` produces the same value on both sides, replace the entire expression with that value directly.
+    **Why:** Identical branches are dead logic — they suggest a missing distinction or a copy-paste mistake. Removing them removes ambiguity for the reader.
+    **How to apply:** `if cond { x } else { x }` → `x`. If the condition was meant to differentiate, fix the values instead.
