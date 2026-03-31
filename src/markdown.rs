@@ -156,7 +156,7 @@ pub fn tools_to_md2(text: &str) -> String {
         .iter()
         .enumerate()
         .map(|(i, line)| {
-            let prefix = if i == 0 { ">" } else { ">" };
+            let prefix = ">";
             let suffix = if i == lines.len() - 1 { "||" } else { "" };
             format!("{}{}{}", prefix, line, suffix)
         })

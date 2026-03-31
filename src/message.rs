@@ -14,7 +14,6 @@ pub struct QueuedMessage {
     pub msg_id: i64,
     pub thread_id: Option<i64>,
     pub is_dm: bool,
-    pub session_id: String,
     pub parts: Vec<PromptPart>,
     pub model: Option<ModelRef>,
 }
@@ -235,7 +234,7 @@ async fn handle_message(
                 .await;
             return;
         }
-        let markup = build_model_keyboard(&models, 0);
+        let markup = build_model_keyboard(models, 0);
         let _ = state
             .tg
             .send_message(
@@ -496,7 +495,6 @@ async fn process_message(
                 msg_id,
                 thread_id,
                 is_dm,
-                session_id: String::new(), // filled by drain_queue
                 parts,
                 model,
             });
@@ -504,21 +502,31 @@ async fn process_message(
     }
 
     // Set up streaming
-    dispatch_prompt(state, chat_id, msg_id, thread_id, is_dm, &session_id, parts, model).await;
+    dispatch_prompt(state, PromptParams {
+        chat_id,
+        msg_id,
+        thread_id,
+        is_dm,
+        session_id: &session_id,
+        parts,
+        model,
+    }).await;
 }
 
 /// Send a prompt and set up the streaming state. Used both for immediate
 /// dispatch and for draining the pending queue.
-pub async fn dispatch_prompt(
-    state: &mut BotState,
-    chat_id: &str,
-    msg_id: i64,
-    thread_id: Option<i64>,
-    is_dm: bool,
-    session_id: &str,
-    parts: Vec<PromptPart>,
-    model: Option<ModelRef>,
-) {
+pub struct PromptParams<'a> {
+    pub chat_id: &'a str,
+    pub msg_id: i64,
+    pub thread_id: Option<i64>,
+    pub is_dm: bool,
+    pub session_id: &'a str,
+    pub parts: Vec<PromptPart>,
+    pub model: Option<ModelRef>,
+}
+
+pub async fn dispatch_prompt(state: &mut BotState, params: PromptParams<'_>) {
+    let PromptParams { chat_id, msg_id, thread_id, is_dm, session_id, parts, model } = params;
     // Detect language from prompt text for the placeholder
     let has_cjk = parts.first()
         .and_then(|p| p.text.as_ref())
@@ -674,7 +682,7 @@ async fn handle_callback(state: &mut BotState, cb: &CallbackQuery) {
                 Ok(m) => m,
                 Err(_) => return,
             };
-            let markup = build_model_keyboard(&models, page);
+            let markup = build_model_keyboard(models, page);
             let _ = state
                 .tg
                 .edit_message_reply_markup(

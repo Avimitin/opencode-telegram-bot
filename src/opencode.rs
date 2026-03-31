@@ -57,10 +57,10 @@ impl OpencodeServer {
             if tokio::time::Instant::now() >= deadline {
                 anyhow::bail!("timeout waiting for opencode serve to start");
             }
-            if let Ok(resp) = client.get(&health_url).send().await {
-                if resp.status().is_success() {
-                    break;
-                }
+            if let Ok(resp) = client.get(&health_url).send().await
+                && resp.status().is_success()
+            {
+                break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }

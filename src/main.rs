@@ -424,13 +424,15 @@ async fn finalize_stream(state: &mut BotState, session_id: &str, stream: StreamS
             let sid = session_id.to_string();
             message::dispatch_prompt(
                 state,
-                &queued.chat_id,
-                queued.msg_id,
-                queued.thread_id,
-                queued.is_dm,
-                &sid,
-                queued.parts,
-                queued.model,
+                message::PromptParams {
+                    chat_id: &queued.chat_id,
+                    msg_id: queued.msg_id,
+                    thread_id: queued.thread_id,
+                    is_dm: queued.is_dm,
+                    session_id: &sid,
+                    parts: queued.parts,
+                    model: queued.model,
+                },
             )
             .await;
         }
