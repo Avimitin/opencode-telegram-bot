@@ -29,12 +29,6 @@
           default = pkgs.mkShell {
             nativeBuildInputs = with pkgs; [ cargo rustc pkg-config clippy rustfmt rust-analyzer ];
             buildInputs = with pkgs; [ openssl opencode ];
-            shellHook = ''
-              echo "opencode-telegram-bot dev shell"
-              echo "  cargo build   — build"
-              echo "  cargo clippy  — lint"
-              echo "  cargo run     — start bot"
-            '';
           };
         }
       );
