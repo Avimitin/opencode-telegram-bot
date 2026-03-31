@@ -71,5 +71,13 @@ When writing or modifying Rust code, follow these conventions:
     **How to apply:** Pass the owned value directly; only use `&` when the value would otherwise be moved and is needed later.
 
 17. **Simplify trivially identical branches** — if an `if`/`else` produces the same value on both sides, replace the entire expression with that value directly.
-    **Why:** Identical branches are dead logic — they suggest a missing distinction or a copy-paste mistake. Removing them removes ambiguity for the reader.
-    **How to apply:** `if cond { x } else { x }` → `x`. If the condition was meant to differentiate, fix the values instead.
+   **Why:** Identical branches are dead logic — they suggest a missing distinction or a copy-paste mistake. Removing them removes ambiguity for the reader.
+   **How to apply:** `if cond { x } else { x }` → `x`. If the condition was meant to differentiate, fix the values instead.
+
+18. **Inline trivial single-use wrappers** — if a function is called exactly once and its body is 1–2 straightforward lines (e.g. a method call plus a constructor), inline the logic at the call site and delete the function. Don't wrap simple operations in named functions that add indirection without abstraction value.
+   **Why:** A trivial wrapper called once adds a name readers must track and a jump they must follow, for zero reuse benefit. Inlining keeps the logic visible where it matters.
+   **How to apply:** When a function has a single call site and its body is trivial, move the body to the caller and remove the function definition.
+
+19. **Don't introduce blocks to scope bindings unnecessarily** — prefer plain sequential `let` statements over `let x = { ... }` blocks unless the block has a semantic purpose (e.g. borrowing a field with temporary scope, or a mutex lock that must drop). Don't wrap code in blocks just to eagerly drop an intermediate variable.
+   **Why:** Extra blocks add nesting and visual noise for no real gain — the intermediate binding is harmless in the outer scope. Reserve blocks for cases where the scope truly matters (lock guards, shadowing, lifetime control).
+   **How to apply:** `let x = { let y = foo(); Bar(y) };` → `let y = foo(); let x = Bar(y);`. Only use a block if `y` holds a resource (lock, file handle) whose early drop is intentional and documented.

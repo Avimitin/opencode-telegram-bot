@@ -52,7 +52,8 @@ async fn main() -> anyhow::Result<()> {
         .await;
 
     // Subscribe to SSE events
-    let mut sse_stream = connect_sse(&oc).await?;
+    let resp = oc.event_subscribe().await.context("subscribe to SSE")?;
+    let mut sse_stream = SseStream::new(resp);
     println!("SSE subscriber connected");
 
     // Build bot state
@@ -140,10 +141,6 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn connect_sse(oc: &OpencodeClient) -> anyhow::Result<SseStream> {
-    let resp = oc.event_subscribe().await.context("subscribe to SSE")?;
-    Ok(SseStream::new(resp))
-}
 
 /// Reconnect to SSE with exponential backoff (capped at 30s, max 10 retries).
 async fn reconnect_sse(oc: &OpencodeClient) -> anyhow::Result<SseStream> {
