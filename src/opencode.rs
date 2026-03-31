@@ -25,9 +25,13 @@ use serde_json::{json, Value};
 use std::process::Stdio;
 use tokio::process::{Child, Command};
 
-fn find_free_port() -> std::io::Result<u16> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    Ok(listener.local_addr()?.port())
+const DEFAULT_OPENCODE_PORT: u16 = 11434;
+
+fn resolve_port() -> u16 {
+    std::env::var("OPENCODE_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_OPENCODE_PORT)
 }
 
 pub struct OpencodeServer {
@@ -38,7 +42,7 @@ pub struct OpencodeServer {
 impl OpencodeServer {
     /// Spawn `opencode serve` and poll the health endpoint until ready.
     pub async fn spawn(config: &Value) -> anyhow::Result<Self> {
-        let port = find_free_port().context("find free port")?;
+        let port = resolve_port();
         let url = format!("http://127.0.0.1:{}", port);
 
         let mut cmd = Command::new("opencode");
