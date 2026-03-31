@@ -3,14 +3,12 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-#[allow(dead_code)]
 pub struct Config {
     pub bot_token: String,
     pub state_dir: PathBuf,
     pub access_file: PathBuf,
     pub approved_dir: PathBuf,
     pub opencode_config: serde_json::Value,
-    pub home_dir: PathBuf,
 }
 
 impl Config {
@@ -19,9 +17,12 @@ impl Config {
 
         let xdg_config = env::var("XDG_CONFIG_HOME")
             .unwrap_or_else(|_| home_dir.join(".config").to_string_lossy().to_string());
+        let xdg_state = env::var("XDG_STATE_HOME")
+            .unwrap_or_else(|_| home_dir.join(".local/state").to_string_lossy().to_string());
+
         let state_dir = PathBuf::from(
             env::var("TELEGRAM_STATE_DIR")
-                .unwrap_or_else(|_| format!("{}/opencode_telegram_bot", xdg_config)),
+                .unwrap_or_else(|_| format!("{}/opencode_telegram_bot", xdg_state)),
         );
 
         let access_file = state_dir.join("access.json");
@@ -45,7 +46,6 @@ impl Config {
             access_file,
             approved_dir,
             opencode_config,
-            home_dir,
         })
     }
 }
